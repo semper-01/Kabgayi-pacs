@@ -1,2 +1,11 @@
-# Kabgayi-pacs
-this is neat KL2TH Radiology image management system.
+# Kabgayi PACS
+
+PACS-Based Radiology Image Management System
+
+Technology Stack:
+- Orthanc
+- Django
+- PostgreSQL
+- React
+- OHIF
+``
