@@ -5,8 +5,16 @@ services:
 
     environment:
       ORTHANC_PASSWORD: ${ORTHANC_PASSWORD}
+      DICOM_WEB_PLUGIN_ENABLED: "true"
+
     ports:
       - "8042:8042"
       - "4242:4242"
+
+    volumes:
+      - orthanc-storage:/var/lib/orthanc/db
+
     restart: unless-stopped
- 
+
+volumes:
+  orthanc-storage:
