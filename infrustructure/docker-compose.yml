@@ -1,0 +1,12 @@
+services:
+  orthanc:
+    image: orthancteam/orthanc
+    container_name: orthanc
+
+    environment:
+      ORTHANC_PASSWORD: ${ORTHANC_PASSWORD}
+    ports:
+      - "8042:8042"
+      - "4242:4242"
+    restart: unless-stopped
+ 
