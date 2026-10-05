@@ -1,0 +1,26 @@
+server {
+    listen 80;
+    server_name localhost;
+
+    # DICOMweb (QIDO-RS / WADO-RS). OHIF sends relative /dicom-web requests on
+    # the same origin; nginx injects the Orthanc basic-auth header and forwards
+    # them to the orthanc container so Orthanc is never exposed directly.
+    location /dicom-web/ {
+        limit_except GET HEAD { deny all; }
+        proxy_set_header Authorization "Basic ${ORTHANC_BASIC}";
+        proxy_pass http://orthanc:8042/dicom-web/;
+    }
+
+    # WADO-URI fallback used by the viewer for external/rendered references.
+    location /wado/ {
+        proxy_set_header Authorization "Basic ${ORTHANC_BASIC}";
+        proxy_pass http://orthanc:8042/wado/;
+    }
+
+    # Serve the OHIF viewer from its own container so the whole UI + proxy share
+    # a single origin. Keeps relative paths (/dicom-web) routing through nginx.
+    location / {
+        proxy_set_header Host $host;
+        proxy_pass http://ohif:80;
+    }
+}

@@ -1,4 +1,17 @@
 services:
+  nginx:
+    image: nginx:alpine
+    container_name: nginx-proxy
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx/nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
+    environment:
+      - ORTHANC_BASIC=${ORTHANC_BASIC}
+    depends_on:
+      - orthanc
+      - ohif
+    
   orthanc:
     image: orthancteam/orthanc
     container_name: orthanc
@@ -13,6 +26,18 @@ services:
 
     volumes:
       - orthanc-storage:/var/lib/orthanc/db
+
+    restart: unless-stopped
+
+  ohif:
+    image: ohif/app:latest
+    container_name: ohif
+
+    expose:
+      - "80"
+
+    volumes:
+      - ./ohif/app-config.js:/usr/share/nginx/html/app-config.js:ro
 
     restart: unless-stopped
 
