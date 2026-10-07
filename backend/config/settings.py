@@ -169,3 +169,15 @@ REST_FRAMEWORK = {
         "rest_framework.renderers.JSONRenderer",
     ],
 }
+
+# ---------------------------------------------------------------------------
+# External service — Orthanc (DICOM/PACS source of truth)
+# ---------------------------------------------------------------------------
+# Django talks to the Orthanc REST API (never directly to Orthanc storage).
+# Credentials are read from the environment; nothing is hard-coded here. If the
+# configured Orthanc development instance requires no authentication, leave
+# ORTHANC_USERNAME/ORTHANC_PASSWORD empty and no Authorization header is sent.
+ORTHANC_URL = os.environ.get("ORTHANC_URL", "http://localhost:8042").rstrip("/")
+ORTHANC_USERNAME = os.environ.get("ORTHANC_USERNAME", "")
+ORTHANC_PASSWORD = os.environ.get("ORTHANC_PASSWORD", "")
+ORTHANC_TIMEOUT = float(os.environ.get("ORTHANC_TIMEOUT", "10"))
