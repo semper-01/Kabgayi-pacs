@@ -20,6 +20,17 @@ from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
+# Maps the API-facing study filter names to the DICOM tags sent to Orthanc's
+# advanced-find ``Query``. Modality is intentionally excluded: it is a
+# series-level tag and cannot be matched at the study level via /tools/find.
+STUDY_FIND_QUERY_TAGS = {
+    "patient_name": "PatientName",
+    "patient_id": "PatientID",
+    "accession_number": "AccessionNumber",
+    "study_date": "StudyDate",
+    "study_description": "StudyDescription",
+}
+
 
 class OrthancError(Exception):
     """Base class for all Orthanc integration errors."""
@@ -61,15 +72,15 @@ class OrthancService:
     # ------------------------------------------------------------------ #
     def get_patients(self):
         """Return the list of Orthanc patient resource IDs."""
-        return self._get_json("/patients")
+        return self._request_json("/patients", method="GET")
 
     def get_studies(self):
         """Return the list of Orthanc study resource IDs."""
-        return self._get_json("/studies")
+        return self._request_json("/studies", method="GET")
 
     def get_study(self, study_id):
         """Return the full Orthanc study resource for a study ID."""
-        return self._get_json(f"/studies/{study_id}")
+        return self._request_json(f"/studies/{study_id}", method="GET")
 
     def get_series(self, study_id):
         """Return the Orthanc series resources belonging to a study ID.
@@ -78,13 +89,64 @@ class OrthancService:
         study resource also lists ``Series`` references. We rely on the
         dedicated series endpoint (present in the installed Orthanc 1.13).
         """
-        return self._get_json(f"/studies/{study_id}/series")
+        return self._request_json(f"/studies/{study_id}/series", method="GET")
+
+    def find_studies(self, filters=None):
+        """Find studies matching study-level DICOM filters (Orthanc advanced find).
+
+        ``filters`` maps the API filter names to values. Only study-level DICOM
+        tags are sent in the Orthanc ``Query`` (e.g. ``PatientName``,
+        ``PatientID``, ``AccessionNumber``, ``StudyDate``, ``StudyDescription``).
+        Matching is performed by Orthanc, not by Django.
+
+        NOTE: ``Modality`` is a series-level tag and cannot be matched at the
+        study level via ``/tools/find`` (confirmed against the running Orthanc);
+        callers that need modality filtering/projection must inspect each
+        study's series via :meth:`get_study_modalities`.
+
+        Returns the list of expanded study resources (as returned by Orthanc).
+        """
+        filters = filters or {}
+        query = {}
+        for api_key in (
+            "patient_name",
+            "patient_id",
+            "accession_number",
+            "study_date",
+            "study_description",
+        ):
+            value = (filters.get(api_key) or "").strip()
+            if value:
+                query[STUDY_FIND_QUERY_TAGS[api_key]] = value
+
+        payload = {
+            "Level": "Study",
+            "Query": query,
+            "Expand": True,
+        }
+        result = self._request_json("/tools/find", method="POST", body=payload)
+        # Orthanc returns a plain JSON array here; tolerate a {value:[...]} wrap.
+        if isinstance(result, dict) and isinstance(result.get("value"), list):
+            return result["value"]
+        if isinstance(result, list):
+            return result
+        return []
+
+    def get_study_modalities(self, study_id):
+        """Return the sorted unique modality tags across a study's series."""
+        modalities = set()
+        for series in self.get_series(study_id):
+            tags = series.get("MainDicomTags", {}) or {}
+            modal = (tags.get("Modality") or "").strip()
+            if modal:
+                modalities.add(modal)
+        return sorted(modalities)
 
     # ------------------------------------------------------------------ #
     # Transport
     # ------------------------------------------------------------------ #
-    def _get_json(self, path):
-        """Perform a GET request and return the decoded JSON payload."""
+    def _request_json(self, path, method="GET", body=None):
+        """Perform an HTTP request and return the decoded JSON payload."""
         url = self.base_url + path
         headers = {}
         if self.username:
@@ -93,8 +155,11 @@ class OrthancService:
             ).decode("ascii")
             headers["Authorization"] = f"Basic {token}"
 
-        request = Request(url, headers=headers, method="GET")
-        logger.debug("Orthanc request: %s", path)
+        data = json.dumps(body).encode("utf-8") if body is not None else None
+        if data is not None:
+            headers["Content-Type"] = "application/json"
+        request = Request(url, headers=headers, data=data, method=method)
+        logger.debug("Orthanc %s request: %s", method, path)
 
         try:
             with urlopen(request, timeout=self.timeout) as response:

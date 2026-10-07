@@ -129,3 +129,72 @@ class OrthancServiceTests(SimpleTestCase):
         mock_urlopen.return_value = FakeResponse(b"not-json")
         with self.assertRaises(OrthancProtocolError):
             self.make_service().get_studies()
+
+    @patch("core.services.orthanc.urlopen")
+    def test_find_studies_posts_to_tools_find(self, mock_urlopen):
+        mock_urlopen.return_value = FakeResponse(json.dumps([{"ID": "s1"}, {"ID": "s2"}]).encode())
+        service = self.make_service()
+
+        result = service.find_studies({"patient_name": "John"})
+
+        self.assertEqual([s["ID"] for s in result], ["s1", "s2"])
+        request = mock_urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, "http://orthanc:8042/tools/find")
+        self.assertEqual(request.get_method(), "POST")
+        body = json.loads(request.data)
+        self.assertEqual(body["Level"], "Study")
+        self.assertEqual(body["Expand"], True)
+        self.assertEqual(body["Query"], {"PatientName": "John"})
+
+    @patch("core.services.orthanc.urlopen")
+    def test_find_studies_maps_filters_to_dicom_tags(self, mock_urlopen):
+        mock_urlopen.return_value = FakeResponse(b"[]")
+        service = self.make_service()
+
+        service.find_studies(
+            {
+                "patient_name": "John",
+                "patient_id": "P1",
+                "accession_number": "A1",
+                "study_date": "20260509",
+                "study_description": "Chest",
+            }
+        )
+        body = json.loads(mock_urlopen.call_args.args[0].data)
+        self.assertEqual(
+            body["Query"],
+            {
+                "PatientName": "John",
+                "PatientID": "P1",
+                "AccessionNumber": "A1",
+                "StudyDate": "20260509",
+                "StudyDescription": "Chest",
+            },
+        )
+
+    @patch("core.services.orthanc.urlopen")
+    def test_find_studies_excludes_modality_from_query(self, mock_urlopen):
+        mock_urlopen.return_value = FakeResponse(b"[]")
+        service = self.make_service()
+
+        service.find_studies({"patient_id": "P1", "modality": "CT"})
+        body = json.loads(mock_urlopen.call_args.args[0].data)
+        # Modality is a series tag; it must not be sent in the study-level Query.
+        self.assertEqual(body["Query"], {"PatientID": "P1"})
+
+    @patch("core.services.orthanc.urlopen")
+    def test_get_study_modalities_aggregates_series(self, mock_urlopen):
+        series = [
+            {"MainDicomTags": {"Modality": "CT"}},
+            {"MainDicomTags": {"Modality": "CT"}},
+            {"MainDicomTags": {"Modality": "MR"}},
+            {"MainDicomTags": {}},
+        ]
+        mock_urlopen.return_value = FakeResponse(json.dumps(series).encode())
+        service = self.make_service()
+
+        self.assertEqual(service.get_study_modalities("abc"), ["CT", "MR"])
+        self.assertEqual(
+            mock_urlopen.call_args.args[0].full_url,
+            "http://orthanc:8042/studies/abc/series",
+        )

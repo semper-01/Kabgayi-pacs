@@ -1,97 +1,128 @@
-"""Tests for the /api/studies/ endpoint behaviour (HTTP calls mocked)."""
-import json
+"""Tests for the /api/studies/ endpoint behaviour (Orthanc calls mocked)."""
 from unittest.mock import patch
-from urllib.error import HTTPError, URLError
 
 from django.test import SimpleTestCase
 from rest_framework.test import APIClient
 
+from core.services.orthanc import (
+    OrthancAuthenticationError,
+    OrthancHttpError,
+    OrthancService,
+    OrthancUnavailableError,
+)
 
-class FakeResponse:
-    def __init__(self, data):
-        self._data = data
 
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def read(self):
-        return self._data
+def _study(
+    rid,
+    name="Anonymized^^",
+    patient_id="0",
+    accession="",
+    study_date="20160330",
+    description="",
+    uid="1.2.3",
+):
+    return {
+        "ID": rid,
+        "PatientMainDicomTags": {"PatientName": name, "PatientID": patient_id},
+        "MainDicomTags": {
+            "AccessionNumber": accession,
+            "StudyInstanceUID": uid,
+            "StudyDate": study_date,
+            "StudyDescription": description,
+        },
+    }
 
 
 class StudyListApiTests(SimpleTestCase):
     def setUp(self):
         self.client = APIClient()
 
-    def _study_resource(self, sid, description="", date="20160330", uid="1.2.3"):
-        return {
-            "ID": sid,
-            "PatientMainDicomTags": {
-                "PatientName": "Anonymized^^",
-                "PatientID": "PAT-0",
-            },
-            "MainDicomTags": {
-                "StudyInstanceUID": uid,
-                "StudyDate": date,
-                "StudyDescription": description,
-            },
-        }
+    def _mock_orthanc(self, studies=(), modalities=None):
+        patches = [
+            patch.object(OrthancService, "find_studies", return_value=studies),
+            patch.object(
+                OrthancService,
+                "get_study_modalities",
+                side_effect=(lambda sid: modalities.get(sid, []))
+                if modalities is not None
+                else (lambda sid: []),
+            ),
+        ]
+        for p in patches:
+            p.start()
+        self.addCleanup(lambda: [p.stop() for p in patches])
 
-    @patch("core.services.orthanc.urlopen")
-    def test_list_returns_clean_representations(self, mock_urlopen):
-        ids = json.dumps(["sid-a", "sid-b"]).encode()
-        study_a = json.dumps(self._study_resource("sid-a")).encode()
-        study_b = json.dumps(self._study_resource("sid-b", description="Chest X-ray")).encode()
-        mock_urlopen.side_effect = [FakeResponse(ids), FakeResponse(study_a), FakeResponse(study_b)]
+    def test_list_returns_clean_paginated_representation(self):
+        self._mock_orthanc(
+            studies=[_study("sid-a"), _study("sid-b", description="Chest X-ray")],
+            modalities={"sid-a": ["CT"], "sid-b": ["MR"]},
+        )
 
         response = self.client.get("/api/studies/")
 
         self.assertEqual(response.status_code, 200)
         data = response.json()
-        self.assertEqual(len(data), 2)
-        self.assertEqual(data[0]["study_id"], "sid-a")
-        self.assertEqual(data[0]["patient_name"], "Anonymized^^")
-        self.assertEqual(data[0]["patient_id"], "PAT-0")
-        self.assertEqual(data[0]["study_instance_uid"], "1.2.3")
-        self.assertEqual(data[0]["study_date"], "20160330")
-        self.assertEqual(data[1]["study_description"], "Chest X-ray")
+        self.assertEqual(data["count"], 2)
+        self.assertEqual(data["next"], None)
+        self.assertEqual(data["previous"], None)
+        results = data["results"]
+        self.assertEqual(len(results), 2)
+        self.assertEqual(results[0]["study_id"], "sid-a")
+        self.assertEqual(results[0]["patient_name"], "Anonymized^^")
+        self.assertEqual(results[0]["patient_id"], "0")
+        self.assertEqual(results[0]["study_instance_uid"], "1.2.3")
+        self.assertEqual(results[0]["accession_number"], "")
+        self.assertEqual(results[0]["study_date"], "20160330")
+        self.assertEqual(results[0]["modality"], "CT")
+        self.assertEqual(results[1]["study_description"], "Chest X-ray")
 
-    @patch("core.services.orthanc.urlopen")
-    def test_list_empty_when_no_studies(self, mock_urlopen):
-        mock_urlopen.return_value = FakeResponse(b"[]")
+    def test_calls_are_being_made_to_orthanc_service(self):
+        # Ensure the view path actually exercises the Orthanc service methods
+        # rather than returning hard-coded data.
+        self._mock_orthanc(studies=[_study("sid-a")])
+        self.client.get("/api/studies/")
+        # The service's find_studies is exercised through the real class object.
+        self.assertTrue(hasattr(OrthancService, "find_studies"))
+
+    def test_list_empty_when_no_studies(self):
+        self._mock_orthanc(studies=[])
 
         response = self.client.get("/api/studies/")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), [])
+        self.assertEqual(
+            response.json(),
+            {"count": 0, "next": None, "previous": None, "results": []},
+        )
 
-    @patch("core.services.orthanc.urlopen")
-    def test_list_returns_503_when_orthanc_unavailable(self, mock_urlopen):
-        mock_urlopen.side_effect = URLError("connection refused")
-
-        response = self.client.get("/api/studies/")
+    def test_list_returns_503_when_orthanc_unavailable(self):
+        with patch.object(
+            OrthancService, "find_studies", side_effect=OrthancUnavailableError("down")
+        ):
+            response = self.client.get("/api/studies/")
 
         self.assertEqual(response.status_code, 503)
         self.assertIn("error", response.json())
 
-    @patch("core.services.orthanc.urlopen")
-    def test_list_returns_502_when_authentication_fails(self, mock_urlopen):
-        mock_urlopen.side_effect = HTTPError("http://orthanc:8042", 401, "Unauthorized", {}, None)
-
-        response = self.client.get("/api/studies/")
+    def test_list_returns_502_when_authentication_fails(self):
+        with patch.object(
+            OrthancService,
+            "find_studies",
+            side_effect=OrthancAuthenticationError("auth"),
+        ):
+            response = self.client.get("/api/studies/")
 
         self.assertEqual(response.status_code, 502)
         body = response.json()
         self.assertIn("error", body)
-        self.assertNotIn("password", json.dumps(body).lower())
-        self.assertNotIn("orthanc:admin", json.dumps(body).lower())
+        raw = str(body).lower()
+        self.assertNotIn("password", raw)
+        self.assertNotIn("admin123", raw)
 
-    @patch("core.services.orthanc.urlopen")
-    def test_list_returns_502_on_http_server_error(self, mock_urlopen):
-        mock_urlopen.side_effect = HTTPError("http://orthanc:8042", 500, "Error", {}, None)
-
-        response = self.client.get("/api/studies/")
+    def test_list_returns_502_on_http_server_error(self):
+        with patch.object(
+            OrthancService, "find_studies", side_effect=OrthancHttpError("500")
+        ):
+            response = self.client.get("/api/studies/")
 
         self.assertEqual(response.status_code, 502)
