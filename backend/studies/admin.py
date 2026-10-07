@@ -1,0 +1,1 @@
+"""Admin registrations for the studies application (none yet in Phase 2)."""

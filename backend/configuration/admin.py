@@ -1,0 +1,1 @@
+"""Admin registrations for the configuration app (none yet in Phase 2)."""

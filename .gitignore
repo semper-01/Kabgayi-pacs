@@ -1,7 +1,13 @@
 .env
 
+# Python / Django
 __pycache__/
 *.pyc
+.venv/
+venv/
+*.sqlite3
+*.log
+
 node_modules/
 dist/
 build/
