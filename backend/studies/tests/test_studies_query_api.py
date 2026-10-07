@@ -1,6 +1,7 @@
 """Tests for /api/studies/ filter validation, forwarding and pagination."""
 from unittest.mock import patch
 
+from django.contrib.auth import get_user_model
 from django.test import SimpleTestCase
 from rest_framework.test import APIClient
 
@@ -24,6 +25,7 @@ class _FakeFinder:
 class StudyQueryApiTests(SimpleTestCase):
     def setUp(self):
         self.client = APIClient()
+        self.client.force_authenticate(user=get_user_model()(username="staff"))
 
     def _patch(self, studies=(), modalities=None):
         finder = _FakeFinder(studies)

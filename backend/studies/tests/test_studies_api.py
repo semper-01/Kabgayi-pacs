@@ -1,6 +1,7 @@
 """Tests for the /api/studies/ endpoint behaviour (Orthanc calls mocked)."""
 from unittest.mock import patch
 
+from django.contrib.auth import get_user_model
 from django.test import SimpleTestCase
 from rest_framework.test import APIClient
 
@@ -36,6 +37,7 @@ def _study(
 class StudyListApiTests(SimpleTestCase):
     def setUp(self):
         self.client = APIClient()
+        self.client.force_authenticate(user=get_user_model()(username="staff"))
 
     def _mock_orthanc(self, studies=(), modalities=None):
         patches = [
@@ -52,7 +54,7 @@ class StudyListApiTests(SimpleTestCase):
             p.start()
         self.addCleanup(lambda: [p.stop() for p in patches])
 
-    def test_list_returns_clean_paginated_representation(self):
+    def test_authenticated_user_can_retrieve_studies(self):
         self._mock_orthanc(
             studies=[_study("sid-a"), _study("sid-b", description="Chest X-ray")],
             modalities={"sid-a": ["CT"], "sid-b": ["MR"]},
@@ -75,6 +77,11 @@ class StudyListApiTests(SimpleTestCase):
         self.assertEqual(results[0]["study_date"], "20160330")
         self.assertEqual(results[0]["modality"], "CT")
         self.assertEqual(results[1]["study_description"], "Chest X-ray")
+
+    def test_anonymous_request_is_rejected(self):
+        response = APIClient().get("/api/studies/")
+
+        self.assertEqual(response.status_code, 401)
 
     def test_calls_are_being_made_to_orthanc_service(self):
         # Ensure the view path actually exercises the Orthanc service methods
