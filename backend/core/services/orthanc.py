@@ -14,6 +14,7 @@ import base64
 import json
 import logging
 from urllib.error import HTTPError, URLError
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 from django.conf import settings
@@ -80,7 +81,11 @@ class OrthancService:
 
     def get_study(self, study_id):
         """Return the full Orthanc study resource for a study ID."""
-        return self._request_json(f"/studies/{study_id}", method="GET")
+        return self._request_json(f"/studies/{quote(study_id, safe='')}", method="GET")
+
+    def get_patient(self, patient_id):
+        """Return the Orthanc patient resource for a patient ID."""
+        return self._request_json(f"/patients/{quote(patient_id, safe='')}", method="GET")
 
     def get_series(self, study_id):
         """Return the Orthanc series resources belonging to a study ID.
@@ -89,7 +94,23 @@ class OrthancService:
         study resource also lists ``Series`` references. We rely on the
         dedicated series endpoint (present in the installed Orthanc 1.13).
         """
-        return self._request_json(f"/studies/{study_id}/series", method="GET")
+        return self._request_json(
+            f"/studies/{quote(study_id, safe='')}/series", method="GET"
+        )
+
+    def get_study_instances(self, study_id):
+        """Return instance IDs listed in the study's Orthanc series resources."""
+        series_resources = self.get_series(study_id)
+        if not isinstance(series_resources, list):
+            raise OrthancProtocolError("Orthanc returned an unexpected response.")
+        instances = []
+        for series in series_resources:
+            if not isinstance(series, dict) or not isinstance(series.get("Instances"), list):
+                raise OrthancProtocolError("Orthanc returned an unexpected response.")
+            instances.extend(series["Instances"])
+        if any(not isinstance(instance_id, str) for instance_id in instances):
+            raise OrthancProtocolError("Orthanc returned an unexpected response.")
+        return instances
 
     def find_studies(self, filters=None):
         """Find studies matching study-level DICOM filters (Orthanc advanced find).
@@ -141,6 +162,27 @@ class OrthancService:
             if modal:
                 modalities.add(modal)
         return sorted(modalities)
+
+    def open_binary(self, path, headers=None):
+        """Open a binary Orthanc response for streaming to an API client."""
+        request_headers = dict(headers or {})
+        if self.username:
+            token = base64.b64encode(
+                f"{self.username}:{self.password}".encode("utf-8")
+            ).decode("ascii")
+            request_headers["Authorization"] = f"Basic {token}"
+
+        request = Request(self.base_url + path, headers=request_headers, method="GET")
+        logger.debug("Orthanc GET request: %s", path)
+        try:
+            return urlopen(request, timeout=self.timeout)
+        except HTTPError as exc:
+            raise self._map_http_error(exc) from exc
+        except (URLError, OSError) as exc:
+            logger.warning("Orthanc unreachable: %s", exc)
+            raise OrthancUnavailableError(
+                "Unable to reach the Orthanc server."
+            ) from exc
 
     # ------------------------------------------------------------------ #
     # Transport

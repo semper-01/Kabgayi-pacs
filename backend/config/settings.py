@@ -168,6 +168,8 @@ REST_FRAMEWORK = {
     "DEFAULT_RENDERER_CLASSES": [
         "rest_framework.renderers.JSONRenderer",
     ],
+    # The study export endpoint uses `format` to choose an actual file format.
+    "URL_FORMAT_OVERRIDE": None,
 }
 
 # ---------------------------------------------------------------------------
@@ -181,3 +183,6 @@ ORTHANC_URL = os.environ.get("ORTHANC_URL", "http://localhost:8042").rstrip("/")
 ORTHANC_USERNAME = os.environ.get("ORTHANC_USERNAME", "")
 ORTHANC_PASSWORD = os.environ.get("ORTHANC_PASSWORD", "")
 ORTHANC_TIMEOUT = float(os.environ.get("ORTHANC_TIMEOUT", "10"))
+VIEWING_SESSION_TIMEOUT_SECONDS = int(
+    os.environ.get("VIEWING_SESSION_TIMEOUT_SECONDS", "90")
+)

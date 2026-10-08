@@ -61,6 +61,23 @@ class OrthancServiceTests(SimpleTestCase):
         self.assertIsNone(request.get_header("Authorization"))
 
     @patch("core.services.orthanc.urlopen")
+    def test_open_binary_preserves_auth_and_accept_headers(self, mock_urlopen):
+        response = FakeResponse(b"image")
+        mock_urlopen.return_value = response
+        service = self.make_service()
+
+        result = service.open_binary(
+            "/instances/instance-1/preview",
+            headers={"Accept": "image/jpeg"},
+        )
+
+        request = mock_urlopen.call_args.args[0]
+        self.assertIs(result, response)
+        self.assertEqual(request.full_url, "http://orthanc:8042/instances/instance-1/preview")
+        self.assertEqual(request.get_header("Accept"), "image/jpeg")
+        self.assertTrue(request.get_header("Authorization").startswith("Basic "))
+
+    @patch("core.services.orthanc.urlopen")
     def test_get_patients_returns_ids(self, mock_urlopen):
         mock_urlopen.return_value = FakeResponse(json.dumps(["pat-1"]).encode())
         self.assertEqual(self.make_service().get_patients(), ["pat-1"])
@@ -75,6 +92,17 @@ class OrthancServiceTests(SimpleTestCase):
         self.assertEqual(
             mock_urlopen.call_args.args[0].full_url,
             "http://orthanc:8042/studies/abc",
+        )
+
+    @patch("core.services.orthanc.urlopen")
+    def test_get_patient_uses_patient_resource_endpoint(self, mock_urlopen):
+        patient = {"ID": "patient-1", "MainDicomTags": {"PatientID": "P1"}}
+        mock_urlopen.return_value = FakeResponse(json.dumps(patient).encode())
+
+        self.assertEqual(self.make_service().get_patient("patient-1"), patient)
+        self.assertEqual(
+            mock_urlopen.call_args.args[0].full_url,
+            "http://orthanc:8042/patients/patient-1",
         )
 
     @patch("core.services.orthanc.urlopen")
