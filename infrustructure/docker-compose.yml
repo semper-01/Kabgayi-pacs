@@ -8,6 +8,9 @@ services:
       - ./nginx/nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
     environment:
       - ORTHANC_BASIC=${ORTHANC_BASIC}
+      - DJANGO_AUTH_UPSTREAM=${DJANGO_AUTH_UPSTREAM:-host.docker.internal:8000}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - orthanc
       - ohif
@@ -21,7 +24,7 @@ services:
       DICOM_WEB_PLUGIN_ENABLED: "true"
 
     ports:
-      - "8042:8042"
+      - "127.0.0.1:8042:8042"
       - "4242:4242"
 
     volumes:

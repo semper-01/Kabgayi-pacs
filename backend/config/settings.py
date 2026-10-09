@@ -183,6 +183,10 @@ ORTHANC_URL = os.environ.get("ORTHANC_URL", "http://localhost:8042").rstrip("/")
 ORTHANC_USERNAME = os.environ.get("ORTHANC_USERNAME", "")
 ORTHANC_PASSWORD = os.environ.get("ORTHANC_PASSWORD", "")
 ORTHANC_TIMEOUT = float(os.environ.get("ORTHANC_TIMEOUT", "10"))
+VIEWER_GRANT_COOKIE_SECURE = os.environ.get(
+    "VIEWER_GRANT_COOKIE_SECURE",
+    str(not DEBUG),
+).lower() in {"1", "true", "yes", "on"}
 VIEWING_SESSION_TIMEOUT_SECONDS = int(
     os.environ.get("VIEWING_SESSION_TIMEOUT_SECONDS", "90")
 )

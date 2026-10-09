@@ -19,7 +19,7 @@ export function AppLayout() {
             Studies
           </NavLink>
         </nav>
-        <button className="button button-quiet logout-button" type="button" onClick={logout}>
+        <button className="button button-quiet logout-button" type="button" onClick={() => void logout()}>
           Sign out
         </button>
       </header>

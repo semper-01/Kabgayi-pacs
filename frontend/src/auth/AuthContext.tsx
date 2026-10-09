@@ -10,11 +10,12 @@ import {
 import { useNavigate } from "react-router-dom";
 import { authenticate } from "../api/auth";
 import { setUnauthorizedHandler } from "../api/client";
+import { revokeViewerGrant } from "../api/viewerAccess";
 
 interface AuthContextValue {
   authorization: string | null;
   login: (username: string, password: string) => Promise<void>;
-  logout: () => void;
+  logout: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -23,10 +24,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [authorization, setAuthorization] = useState<string | null>(null);
   const navigate = useNavigate();
 
-  const logout = useCallback(() => {
+  const logout = useCallback(async () => {
+    let revokeFailed = false;
+    if (authorization) {
+      try {
+        await revokeViewerGrant(authorization);
+      } catch {
+        revokeFailed = true;
+      }
+    }
     setAuthorization(null);
-    navigate("/login", { replace: true });
-  }, [navigate]);
+    navigate("/login", {
+      replace: true,
+      state: revokeFailed
+        ? { message: "Viewer access could not be revoked immediately and will expire shortly." }
+        : undefined,
+    });
+  }, [authorization, navigate]);
 
   useEffect(() => {
     setUnauthorizedHandler(() => {

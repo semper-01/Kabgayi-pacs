@@ -3,18 +3,37 @@ server {
     server_name localhost;
 
     # DICOMweb (QIDO-RS / WADO-RS). OHIF sends relative /dicom-web requests on
-    # the same origin; nginx injects the Orthanc basic-auth header and forwards
-    # them to the orthanc container so Orthanc is never exposed directly.
+    # the same origin. Django authorizes the PACS user before nginx injects
+    # Orthanc's server-side basic-auth header and forwards DICOM data.
     location /dicom-web/ {
+        auth_request /_pacs_viewer_auth;
         limit_except GET HEAD { deny all; }
         proxy_set_header Authorization "Basic ${ORTHANC_BASIC}";
         proxy_pass http://orthanc:8042/dicom-web/;
+        access_log off;
     }
 
     # WADO-URI fallback used by the viewer for external/rendered references.
     location /wado/ {
+        auth_request /_pacs_viewer_auth;
+        limit_except GET HEAD { deny all; }
         proxy_set_header Authorization "Basic ${ORTHANC_BASIC}";
         proxy_pass http://orthanc:8042/wado/;
+        access_log off;
+    }
+
+    location = /_pacs_viewer_auth {
+        internal;
+        resolver 127.0.0.11 ipv6=off valid=30s;
+        set $django_auth_upstream ${DJANGO_AUTH_UPSTREAM};
+        proxy_pass http://$django_auth_upstream/api/viewer-access/authorize/;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        proxy_set_header Host 127.0.0.1;
+        proxy_set_header Accept application/json;
+        proxy_set_header Authorization "";
+        proxy_set_header Cookie "pacs_viewer_grant=$cookie_pacs_viewer_grant";
+        proxy_set_header X-Original-URI "";
     }
 
     # Serve the OHIF viewer from its own container so the whole UI + proxy share
