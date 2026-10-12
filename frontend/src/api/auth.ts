@@ -1,8 +1,23 @@
 import { createBasicAuthorization, request } from "./client";
-import type { StudyPage } from "../types/study";
 
-export async function authenticate(username: string, password: string): Promise<string> {
+export interface AuthenticatedUser {
+  id: number;
+  username: string;
+  email: string;
+  account_type: "staff" | "administrator";
+  is_active: boolean;
+}
+
+export async function authenticate(
+  username: string,
+  password: string,
+): Promise<{ authorization: string; user: AuthenticatedUser }> {
   const authorization = createBasicAuthorization(username, password);
-  await request<StudyPage>("/api/studies/?limit=1&offset=0", authorization, {}, false);
-  return authorization;
+  const user = await request<AuthenticatedUser>(
+    "/api/auth/session/",
+    authorization,
+    {},
+    false,
+  );
+  return { authorization, user };
 }

@@ -2,7 +2,7 @@ import { NavLink, Outlet } from "react-router-dom";
 import { useAuth } from "../../auth/AuthContext";
 
 export function AppLayout() {
-  const { logout } = useAuth();
+  const { logout, user } = useAuth();
 
   return (
     <div className="app-shell">
@@ -18,6 +18,11 @@ export function AppLayout() {
           <NavLink to="/" end className={({ isActive }) => isActive ? "nav-link active" : "nav-link"}>
             Studies
           </NavLink>
+          {user?.account_type === "administrator" && (
+            <NavLink to="/admin" className={({ isActive }) => isActive ? "nav-link active" : "nav-link"}>
+              Administration
+            </NavLink>
+          )}
         </nav>
         <button className="button button-quiet logout-button" type="button" onClick={() => void logout()}>
           Sign out

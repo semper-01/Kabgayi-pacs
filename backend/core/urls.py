@@ -8,6 +8,7 @@ app_name = "core"
 
 urlpatterns = [
     path("api/health/", views.health, name="health"),
+    path("api/auth/session/", views.auth_session, name="auth-session"),
     path(
         "api/viewer-access/grant/",
         viewer_access.issue_viewer_grant,

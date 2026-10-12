@@ -183,6 +183,7 @@ ORTHANC_URL = os.environ.get("ORTHANC_URL", "http://localhost:8042").rstrip("/")
 ORTHANC_USERNAME = os.environ.get("ORTHANC_USERNAME", "")
 ORTHANC_PASSWORD = os.environ.get("ORTHANC_PASSWORD", "")
 ORTHANC_TIMEOUT = float(os.environ.get("ORTHANC_TIMEOUT", "10"))
+OHIF_HEALTH_URL = os.environ.get("OHIF_HEALTH_URL", "http://localhost:8080")
 VIEWER_GRANT_COOKIE_SECURE = os.environ.get(
     "VIEWER_GRANT_COOKIE_SECURE",
     str(not DEBUG),

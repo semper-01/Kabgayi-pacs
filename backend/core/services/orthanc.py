@@ -79,6 +79,10 @@ class OrthancService:
         """Return the list of Orthanc study resource IDs."""
         return self._request_json("/studies", method="GET")
 
+    def get_system(self):
+        """Return Orthanc's system status without exposing its configuration."""
+        return self._request_json("/system", method="GET")
+
     def get_study(self, study_id):
         """Return the full Orthanc study resource for a study ID."""
         return self._request_json(f"/studies/{quote(study_id, safe='')}", method="GET")
@@ -111,6 +115,43 @@ class OrthancService:
         if any(not isinstance(instance_id, str) for instance_id in instances):
             raise OrthancProtocolError("Orthanc returned an unexpected response.")
         return instances
+
+    def get_instance(self, instance_id):
+        """Return public resource and origin metadata for one DICOM instance."""
+        return self._request_json(
+            f"/instances/{quote(instance_id, safe='')}", method="GET"
+        )
+
+    def get_instance_file(self, instance_id):
+        """Download an existing instance for a confirmed duplicate replacement."""
+        return self.open_binary(
+            f"/instances/{quote(instance_id, safe='')}/file",
+            headers={"Accept": "application/dicom"},
+        )
+
+    def lookup_dicom(self, content):
+        """Find resources matching a DICOM instance without importing it."""
+        return self._request_binary_json(
+            "/tools/lookup",
+            method="POST",
+            body=content,
+            content_type="application/dicom",
+        )
+
+    def store_dicom(self, content):
+        """Send one validated DICOM file to Orthanc."""
+        return self._request_binary_json(
+            "/instances",
+            method="POST",
+            body=content,
+            content_type="application/dicom",
+        )
+
+    def delete_instance(self, instance_id):
+        """Delete an explicitly selected duplicate instance."""
+        return self._request_json(
+            f"/instances/{quote(instance_id, safe='')}", method="DELETE"
+        )
 
     def find_studies(self, filters=None):
         """Find studies matching study-level DICOM filters (Orthanc advanced find).
@@ -215,6 +256,38 @@ class OrthancService:
                 "Unable to reach the Orthanc server."
             ) from exc
 
+        try:
+            return json.loads(payload)
+        except (ValueError, TypeError) as exc:
+            raise OrthancProtocolError(
+                "Orthanc returned an unexpected response."
+            ) from exc
+
+    def _request_binary_json(self, path, method, body, content_type):
+        """POST binary DICOM data and decode Orthanc's JSON response."""
+        headers = {"Content-Type": content_type}
+        if self.username:
+            token = base64.b64encode(
+                f"{self.username}:{self.password}".encode("utf-8")
+            ).decode("ascii")
+            headers["Authorization"] = f"Basic {token}"
+        request = Request(
+            self.base_url + path,
+            headers=headers,
+            data=body,
+            method=method,
+        )
+        logger.debug("Orthanc %s request: %s", method, path)
+        try:
+            with urlopen(request, timeout=self.timeout) as response:
+                payload = response.read()
+        except HTTPError as exc:
+            raise self._map_http_error(exc) from exc
+        except (URLError, OSError) as exc:
+            logger.warning("Orthanc unreachable: %s", exc)
+            raise OrthancUnavailableError(
+                "Unable to reach the Orthanc server."
+            ) from exc
         try:
             return json.loads(payload)
         except (ValueError, TypeError) as exc:

@@ -184,7 +184,8 @@ input {
   font-weight: 600;
 }
 
-.field input {
+.field input,
+.field select {
   width: 100%;
   height: 40px;
   padding: 8px 10px;
@@ -201,6 +202,10 @@ input {
 }
 
 .field input:focus {
+  border-color: var(--focus);
+}
+
+.field select:focus {
   border-color: var(--focus);
 }
 
@@ -764,6 +769,236 @@ input {
   .ohif-frame {
     height: 75vh;
     min-height: 500px;
+  }
+}
+
+.admin-page {
+  padding-bottom: 30px;
+}
+
+.admin-tabs {
+  display: flex;
+  overflow-x: auto;
+  gap: 5px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid var(--line);
+}
+
+.admin-tab {
+  flex: 0 0 auto;
+  padding: 12px 13px;
+  color: #435363;
+  background: transparent;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.admin-tab:hover,
+.admin-tab.active {
+  color: var(--primary-dark);
+}
+
+.admin-tab.active {
+  border-bottom-color: var(--primary);
+}
+
+.admin-section {
+  display: grid;
+  gap: 18px;
+}
+
+.admin-section .detail-section {
+  margin-top: 0;
+}
+
+.admin-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.admin-metric {
+  padding: 18px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.admin-metric p {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.admin-metric strong {
+  color: var(--ink);
+  font-size: 24px;
+}
+
+.admin-form {
+  display: grid;
+  align-items: end;
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.admin-user-form {
+  grid-template-columns: repeat(4, minmax(140px, 1fr)) auto;
+}
+
+.admin-machine-form {
+  grid-template-columns: repeat(5, minmax(130px, 1fr)) auto;
+}
+
+.admin-network-form {
+  grid-template-columns: repeat(3, minmax(160px, 1fr)) auto;
+}
+
+.admin-form .field input,
+.admin-form .field select {
+  min-width: 0;
+  height: 40px;
+  padding: 8px 10px;
+  color: var(--ink);
+  background: #ffffff;
+  border: 1px solid #bdc8d1;
+  border-radius: 4px;
+}
+
+.admin-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  min-width: 190px;
+}
+
+.admin-actions .field {
+  flex: 1 1 180px;
+}
+
+.machine-study-results {
+  flex-basis: 100%;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.health-list {
+  display: grid;
+  gap: 10px;
+  margin: 16px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.health-list li {
+  display: grid;
+  grid-template-columns: minmax(100px, 1fr) auto;
+  gap: 4px 14px;
+  padding: 12px 0;
+  border-bottom: 1px solid #e7ecef;
+  font-size: 14px;
+}
+
+.health-list li:last-child {
+  border-bottom: 0;
+}
+
+.health-list p {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.health-status {
+  text-transform: capitalize;
+}
+
+.status-healthy {
+  color: #23734d;
+}
+
+.status-warning {
+  color: #a46511;
+}
+
+.status-offline {
+  color: #a23232;
+}
+
+.admin-import-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin: 18px 0;
+}
+
+.import-validation {
+  margin-top: 18px;
+  padding: 16px;
+  background: #f8fafb;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+}
+
+.import-validation h3 {
+  margin: 0 0 10px;
+  font-size: 15px;
+}
+
+.import-validation ul {
+  max-height: 300px;
+  overflow: auto;
+  padding-left: 20px;
+  color: #405160;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.change-workflow pre {
+  max-width: 100%;
+  overflow: auto;
+  padding: 12px;
+  background: #f6f8f9;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+@media (max-width: 900px) {
+  .admin-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .admin-user-form,
+  .admin-machine-form,
+  .admin-network-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .admin-metrics,
+  .admin-user-form,
+  .admin-machine-form,
+  .admin-network-form,
+  .admin-import-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-form > .button {
+    width: 100%;
+  }
+
+  .admin-tabs {
+    margin-right: -14px;
+    margin-left: -14px;
+    padding: 0 14px;
   }
 }
 

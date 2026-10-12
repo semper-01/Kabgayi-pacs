@@ -14,6 +14,8 @@ from rest_framework.decorators import (
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from audit.models import AuditEvent
+from audit.services import record_event
 from core.services.orthanc import (
     OrthancAuthenticationError,
     OrthancHttpError,
@@ -66,6 +68,12 @@ def status_open(request):
         user=request.user,
         opened_at=now,
         last_heartbeat_at=now,
+    )
+    record_event(
+        AuditEvent.EventType.VIEWING,
+        user=request.user,
+        request=request,
+        details={"action": "viewing_started", "study_id": study_id},
     )
     return Response(
         {
@@ -146,6 +154,15 @@ def status_close(request):
         viewing_session.is_active = False
         viewing_session.closed_at = now
         viewing_session.save(update_fields=["is_active", "closed_at"])
+        record_event(
+            AuditEvent.EventType.VIEWING,
+            user=request.user,
+            request=request,
+            details={
+                "action": "viewing_ended",
+                "study_id": viewing_session.study_id,
+            },
+        )
     return Response(
         {
             "session_id": str(viewing_session.id),

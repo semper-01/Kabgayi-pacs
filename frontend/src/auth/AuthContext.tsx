@@ -8,12 +8,13 @@ import {
   type ReactNode,
 } from "react";
 import { useNavigate } from "react-router-dom";
-import { authenticate } from "../api/auth";
+import { authenticate, type AuthenticatedUser } from "../api/auth";
 import { setUnauthorizedHandler } from "../api/client";
 import { revokeViewerGrant } from "../api/viewerAccess";
 
 interface AuthContextValue {
   authorization: string | null;
+  user: AuthenticatedUser | null;
   login: (username: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
 }
@@ -22,6 +23,7 @@ const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [authorization, setAuthorization] = useState<string | null>(null);
+  const [user, setUser] = useState<AuthenticatedUser | null>(null);
   const navigate = useNavigate();
 
   const logout = useCallback(async () => {
@@ -34,6 +36,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     }
     setAuthorization(null);
+    setUser(null);
     navigate("/login", {
       replace: true,
       state: revokeFailed
@@ -45,6 +48,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     setUnauthorizedHandler(() => {
       setAuthorization(null);
+      setUser(null);
       navigate("/login", {
         replace: true,
         state: { message: "Your session is no longer valid. Please sign in again." },
@@ -54,13 +58,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [navigate]);
 
   const login = useCallback(async (username: string, password: string) => {
-    const token = await authenticate(username, password);
-    setAuthorization(token);
+    const session = await authenticate(username, password);
+    setAuthorization(session.authorization);
+    setUser(session.user);
   }, []);
 
   const value = useMemo(
-    () => ({ authorization, login, logout }),
-    [authorization, login, logout],
+    () => ({ authorization, user, login, logout }),
+    [authorization, user, login, logout],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
