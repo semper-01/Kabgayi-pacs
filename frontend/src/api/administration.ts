@@ -124,11 +124,22 @@ export function resetUserPassword(authorization: string, id: number, new_passwor
   );
 }
 
-export type ActivityCategory = "all" | "login" | "viewing" | "export";
+export type ActivityCategory = "all" | "login" | "viewing" | "export" | "others";
 
-export function getActivity(authorization: string, category: ActivityCategory = "all") {
-  return request<{ results: ActivityEvent[]; audit_gaps: string[] }>(
-    `/api/admin/activity/?category=${category}`,
+export function getActivity(
+  authorization: string,
+  category: ActivityCategory = "all",
+  page = 1,
+) {
+  return request<{
+    results: ActivityEvent[];
+    total: number;
+    page: number;
+    page_size: number;
+    total_pages: number;
+    audit_gaps: string[];
+  }>(
+    `/api/admin/activity/?category=${category}&page=${page}`,
     authorization,
   );
 }

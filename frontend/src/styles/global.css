@@ -42,6 +42,8 @@ input {
 
 .app-shell {
   min-height: 100vh;
+  display: flex;
+  flex-direction: column;
 }
 
 .app-header {
@@ -118,8 +120,27 @@ input {
 
 .main-content {
   width: min(1440px, 100%);
+  flex: 1;
   margin: 0 auto;
   padding: 36px 5vw 64px;
+}
+
+.hospital-footer {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 5vw;
+  color: var(--muted);
+  background: #ffffff;
+  border-top: 1px solid var(--line);
+  font-size: 11px;
+}
+
+.hospital-footer span:first-child {
+  color: #435363;
+  font-weight: 650;
 }
 
 .page-heading {
@@ -503,7 +524,7 @@ input {
 }
 
 .login-page {
-  min-height: 100vh;
+  min-height: calc(100vh - 42px);
   display: grid;
   place-items: center;
   padding: 24px;
@@ -609,6 +630,11 @@ input {
     padding: 28px 24px 48px;
   }
 
+  .hospital-footer {
+    padding-right: 24px;
+    padding-left: 24px;
+  }
+
   .search-grid {
     grid-template-columns: repeat(2, minmax(170px, 1fr));
   }
@@ -658,6 +684,16 @@ input {
 
   .main-content {
     padding: 24px 14px 40px;
+  }
+
+  .hospital-footer {
+    padding-right: 14px;
+    padding-left: 14px;
+  }
+
+  .activity-pagination {
+    flex-wrap: wrap;
+    gap: 10px;
   }
 
   .page-heading {
@@ -900,6 +936,37 @@ input {
 .audit-controls .field {
   flex: 0 1 220px;
   margin: 0;
+}
+
+.activity-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  margin-top: 16px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.password-reset-form {
+  display: flex;
+  flex: 1 1 100%;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 7px;
+  min-width: min(100%, 220px);
+}
+
+.password-reset-form .field {
+  flex: 1 1 180px;
+}
+
+.password-reset-form input {
+  min-width: 0;
+  height: 36px;
+  padding: 7px 9px;
+  border: 1px solid #bdc8d1;
+  border-radius: 4px;
 }
 
 .admin-actions .field {

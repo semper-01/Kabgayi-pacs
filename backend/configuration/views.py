@@ -356,7 +356,7 @@ def user_action(request, user_id):
     return Response({"id": target.pk, "password_reset": True})
 
 
-ACTIVITY_CATEGORIES = {"all", "login", "viewing", "export"}
+ACTIVITY_CATEGORIES = {"all", "login", "viewing", "export", "others"}
 
 
 def _activity_events(category, limit=None):
@@ -370,8 +370,15 @@ def _activity_events(category, limit=None):
             audit_events = audit_events.filter(event_type=AuditEvent.EventType.LOGIN)
         elif category == "viewing":
             audit_events = audit_events.filter(event_type=AuditEvent.EventType.VIEWING)
+        elif category == "others":
+            audit_events = audit_events.exclude(
+                event_type__in=(
+                    AuditEvent.EventType.LOGIN,
+                    AuditEvent.EventType.VIEWING,
+                )
+            )
         if limit is not None:
-            audit_events = audit_events[:limit]
+            audit_events = audit_events.order_by("-created_at", "-pk")[:limit]
         events.extend(_audit_display(event) for event in audit_events)
 
     if category in ("all", "viewing"):
@@ -392,8 +399,36 @@ def _activity_events(category, limit=None):
             for session in sessions
         )
 
-    events.sort(key=lambda event: event["created_at"], reverse=True)
+    events.sort(key=_activity_sort_key, reverse=True)
     return events[:limit] if limit is not None else events
+
+
+def _activity_sort_key(event):
+    source, _, identifier = event["id"].partition("-")
+    if identifier.isdecimal():
+        return event["created_at"], source, 0, int(identifier)
+    return event["created_at"], source, 1, identifier
+
+
+def _activity_count(category):
+    if category == "export":
+        return 0
+    audit_events = AuditEvent.objects.all()
+    if category == "login":
+        audit_events = audit_events.filter(event_type=AuditEvent.EventType.LOGIN)
+    elif category == "viewing":
+        audit_events = audit_events.filter(event_type=AuditEvent.EventType.VIEWING)
+    elif category == "others":
+        audit_events = audit_events.exclude(
+            event_type__in=(
+                AuditEvent.EventType.LOGIN,
+                AuditEvent.EventType.VIEWING,
+            )
+        )
+    count = audit_events.count()
+    if category in ("all", "viewing"):
+        count += ViewingSession.objects.count()
+    return count
 
 
 def _safe_audit_context(value):
@@ -437,12 +472,34 @@ def activity(request):
     category = request.query_params.get("category", "all")
     if category not in ACTIVITY_CATEGORIES:
         return Response(
-            {"error": "Choose all, login, viewing, or export."},
+            {"error": "Choose all, login, viewing, export, or others."},
             status=status.HTTP_400_BAD_REQUEST,
         )
+    page_value = request.query_params.get("page", "1")
+    try:
+        requested_page = int(page_value)
+    except (TypeError, ValueError):
+        return Response(
+            {"error": "Page must be a positive integer."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if requested_page < 1:
+        return Response(
+            {"error": "Page must be a positive integer."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    page_size = 50
+    total = _activity_count(category)
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    page = min(requested_page, total_pages)
+    results = _activity_events(category, limit=page * page_size)
     return Response(
         {
-            "results": _activity_events(category, limit=150),
+            "results": results[(page - 1) * page_size : page * page_size],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": total_pages,
             "audit_gaps": _activity_gaps(),
         }
     )
@@ -457,7 +514,7 @@ def activity_export(request):
     category = request.query_params.get("category", "all")
     if category not in ACTIVITY_CATEGORIES:
         return Response(
-            {"error": "Choose all, login, viewing, or export."},
+            {"error": "Choose all, login, viewing, export, or others."},
             status=status.HTTP_400_BAD_REQUEST,
         )
     output = StringIO(newline="")

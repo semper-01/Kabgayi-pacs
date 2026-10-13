@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { getErrorMessage } from "../api/client";
+import { HospitalFooter } from "../components/layout/HospitalFooter";
 
 interface LoginLocationState {
   message?: string;
@@ -34,45 +35,48 @@ export function LoginPage() {
   }
 
   return (
-    <main className="login-page">
-      <section className="login-panel" aria-labelledby="login-title">
-        <div className="login-brand">
-          <span className="brand-mark brand-mark-large" aria-hidden="true">K</span>
-          <p className="eyebrow">Kabgayi Level 2 Teaching Hospital</p>
-        </div>
-        <h1 id="login-title">Radiology PACS</h1>
-        <p className="login-intro">Sign in to access the hospital study worklist.</p>
-        {notice && <p className="notice-message" role="status">{notice}</p>}
-        {error && <p className="error-message" role="alert">{error}</p>}
-        <form onSubmit={submit} className="login-form">
-          <label className="field">
-            <span>Username</span>
-            <input
-              type="text"
-              name="username"
-              value={username}
-              onChange={(event) => setUsername(event.target.value)}
-              autoComplete="username"
-              required
-              autoFocus
-            />
-          </label>
-          <label className="field">
-            <span>Password</span>
-            <input
-              type="password"
-              name="password"
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              autoComplete="current-password"
-              required
-            />
-          </label>
-          <button className="button button-primary login-submit" type="submit" disabled={loading}>
-            {loading ? "Signing in…" : "Sign in"}
-          </button>
-        </form>
-      </section>
-    </main>
+    <>
+      <main className="login-page">
+        <section className="login-panel" aria-labelledby="login-title">
+          <div className="login-brand">
+            <span className="brand-mark brand-mark-large" aria-hidden="true">K</span>
+            <p className="eyebrow">Kabgayi Level 2 Teaching Hospital</p>
+          </div>
+          <h1 id="login-title">Radiology PACS</h1>
+          <p className="login-intro">Sign in to access the hospital study worklist.</p>
+          {notice && <p className="notice-message" role="status">{notice}</p>}
+          {error && <p className="error-message" role="alert">{error}</p>}
+          <form onSubmit={submit} className="login-form">
+            <label className="field">
+              <span>Username</span>
+              <input
+                type="text"
+                name="username"
+                value={username}
+                onChange={(event) => setUsername(event.target.value)}
+                autoComplete="username"
+                required
+                autoFocus
+              />
+            </label>
+            <label className="field">
+              <span>Password</span>
+              <input
+                type="password"
+                name="password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                autoComplete="current-password"
+                required
+              />
+            </label>
+            <button className="button button-primary login-submit" type="submit" disabled={loading}>
+              {loading ? "Signing in…" : "Sign in"}
+            </button>
+          </form>
+        </section>
+      </main>
+      <HospitalFooter />
+    </>
   );
 }

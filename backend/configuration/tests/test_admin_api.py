@@ -18,6 +18,7 @@ from configuration.models import (
     StudyMachineAssociation,
 )
 from core.services.orthanc import OrthancService, OrthancUnavailableError
+from studies.models import ViewingSession
 
 
 def _dicom_instance():
@@ -377,6 +378,121 @@ class AdministrationApiTests(TestCase):
         self.as_staff()
         denied = self.client.get("/api/admin/activity/export/?category=login")
         self.assertEqual(denied.status_code, 403)
+
+    def test_activity_pagination_is_capped_stable_and_invalid_pages_are_handled(self):
+        self.as_admin()
+        events = AuditEvent.objects.bulk_create(
+            [
+                AuditEvent(
+                    event_type=AuditEvent.EventType.LOGIN,
+                    username=f"staff-{index}",
+                )
+                for index in range(104)
+            ]
+        )
+        AuditEvent.objects.filter(pk__in=[event.pk for event in events]).update(
+            created_at=AuditEvent.objects.order_by("-created_at").first().created_at
+        )
+
+        first = self.client.get("/api/admin/activity/?category=login&page=1")
+        second = self.client.get("/api/admin/activity/?category=login&page=2")
+        third = self.client.get("/api/admin/activity/?category=login&page=3")
+        beyond_end = self.client.get("/api/admin/activity/?category=login&page=99")
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(len(first.json()["results"]), 50)
+        self.assertEqual((first.json()["page"], first.json()["total_pages"]), (1, 3))
+        self.assertEqual(len(second.json()["results"]), 50)
+        self.assertEqual(second.json()["page"], 2)
+        self.assertEqual(len(third.json()["results"]), 4)
+        self.assertEqual(third.json()["page"], 3)
+        self.assertEqual(beyond_end.json()["page"], 3)
+        first_ids = {event["id"] for event in first.json()["results"]}
+        second_ids = {event["id"] for event in second.json()["results"]}
+        self.assertFalse(first_ids & second_ids)
+        self.assertEqual(
+            self.client.get("/api/admin/activity/?page=invalid").status_code,
+            400,
+        )
+        self.assertEqual(
+            self.client.get("/api/admin/activity/?page=0").status_code,
+            400,
+        )
+
+    def test_activity_all_category_handles_uuid_viewing_session_ids(self):
+        self.as_admin()
+        AuditEvent.objects.create(
+            event_type=AuditEvent.EventType.ADMIN_CHANGE,
+            username="admin",
+        )
+        ViewingSession.objects.create(user=self.admin, study_id="test-study")
+
+        response = self.client.get("/api/admin/activity/?category=all&page=1")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()["results"]), 2)
+        self.assertEqual(
+            {event["event_type"] for event in response.json()["results"]},
+            {AuditEvent.EventType.ADMIN_CHANGE, AuditEvent.EventType.VIEWING},
+        )
+
+    def test_activity_others_filter_includes_non_login_and_non_viewing_types(self):
+        self.as_admin()
+        for event_type in (
+            AuditEvent.EventType.LOGIN,
+            AuditEvent.EventType.VIEWING,
+            AuditEvent.EventType.PASSWORD_RESET,
+            AuditEvent.EventType.MACHINE_CONFIGURATION,
+            AuditEvent.EventType.DICOM_IMPORT,
+        ):
+            AuditEvent.objects.create(event_type=event_type)
+
+        others = self.client.get("/api/admin/activity/?category=others")
+        viewing = self.client.get("/api/admin/activity/?category=viewing")
+        all_events = self.client.get("/api/admin/activity/?category=all")
+        export_events = self.client.get("/api/admin/activity/?category=export")
+
+        self.assertEqual(
+            {event["event_type"] for event in others.json()["results"]},
+            {
+                AuditEvent.EventType.PASSWORD_RESET,
+                AuditEvent.EventType.MACHINE_CONFIGURATION,
+                AuditEvent.EventType.DICOM_IMPORT,
+            },
+        )
+        self.assertEqual(
+            {event["event_type"] for event in viewing.json()["results"]},
+            {AuditEvent.EventType.VIEWING},
+        )
+        self.assertEqual(len(all_events.json()["results"]), 5)
+        self.assertEqual(export_events.json()["results"], [])
+
+        self.as_staff()
+        self.assertEqual(
+            self.client.get("/api/admin/activity/?category=others").status_code,
+            403,
+        )
+
+    def test_csv_export_keeps_complete_filter_scope_across_pages(self):
+        self.as_admin()
+        AuditEvent.objects.bulk_create(
+            [
+                AuditEvent(
+                    event_type=AuditEvent.EventType.LOGIN,
+                    username=f"login-{index}",
+                )
+                for index in range(104)
+            ]
+        )
+
+        visible_page = self.client.get("/api/admin/activity/?category=login&page=2")
+        export = self.client.get("/api/admin/activity/export/?category=login")
+
+        self.assertEqual(len(visible_page.json()["results"]), 50)
+        self.assertEqual(
+            len(export.content.decode("utf-8").splitlines()),
+            105,
+        )
 
     def test_network_apply_requires_explicit_restart_confirmation_and_never_restarts(self):
         self.as_admin()

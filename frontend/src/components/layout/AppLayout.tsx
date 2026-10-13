@@ -1,5 +1,6 @@
 import { NavLink, Outlet } from "react-router-dom";
 import { useAuth } from "../../auth/AuthContext";
+import { HospitalFooter } from "./HospitalFooter";
 
 export function AppLayout() {
   const { logout, user } = useAuth();
@@ -31,6 +32,7 @@ export function AppLayout() {
       <main className="main-content">
         <Outlet />
       </main>
+      <HospitalFooter />
     </div>
   );
 }

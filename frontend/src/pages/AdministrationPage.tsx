@@ -55,8 +55,12 @@ export function AdministrationPage() {
   const [loading, setLoading] = useState(false);
   const [overview, setOverview] = useState<Awaited<ReturnType<typeof getOverview>> | null>(null);
   const [users, setUsers] = useState<AdminUser[]>([]);
+  const [resettingUserId, setResettingUserId] = useState<number | null>(null);
+  const [resetPasswordValue, setResetPasswordValue] = useState("");
+  const [resetPending, setResetPending] = useState(false);
   const [activity, setActivity] = useState<Awaited<ReturnType<typeof getActivity>> | null>(null);
   const [activityCategory, setActivityCategory] = useState<ActivityCategory>("all");
+  const [activityPage, setActivityPage] = useState(1);
   const [health, setHealth] = useState<ServiceHealth | null>(null);
   const [machines, setMachines] = useState<Machine[]>([]);
   const [network, setNetwork] = useState<ConfigurationValues | null>(null);
@@ -83,7 +87,11 @@ export function AdministrationPage() {
     try {
       if (section === "System Overview") setOverview(await getOverview(authorization));
       if (section === "Users") setUsers(await getUsers(authorization));
-      if (section === "Activity") setActivity(await getActivity(authorization, activityCategory));
+      if (section === "Activity") {
+        const result = await getActivity(authorization, activityCategory, activityPage);
+        setActivity(result);
+        if (result.page !== activityPage) setActivityPage(result.page);
+      }
       if (section === "Service Health") setHealth(await getServiceHealth(authorization));
       if (section === "Machine Management") setMachines(await getMachines(authorization));
       if (section === "Network Configuration") {
@@ -94,7 +102,7 @@ export function AdministrationPage() {
     } finally {
       setLoading(false);
     }
-  }, [activityCategory, authorization, section]);
+  }, [activityCategory, activityPage, authorization, section]);
 
   useEffect(() => {
     void refresh();
@@ -144,14 +152,30 @@ export function AdministrationPage() {
     await run(() => setUserActive(authorization, user.id, true), `${user.username} activated.`);
   }
 
-  async function resetPassword(user: AdminUser) {
+  function startPasswordReset(user: AdminUser) {
+    setResettingUserId(user.id);
+    setResetPasswordValue("");
+    setError("");
+    setNotice("");
+  }
+
+  async function resetPassword(event: FormEvent<HTMLFormElement>, user: AdminUser) {
+    event.preventDefault();
     if (!authorization) return;
-    const newPassword = window.prompt(`Enter a new password for ${user.username}`);
-    if (!newPassword) return;
-    await run(
-      () => resetUserPassword(authorization, user.id, newPassword),
-      `Password reset for ${user.username}.`,
-    );
+    setResetPending(true);
+    setError("");
+    setNotice("");
+    try {
+      const result = await resetUserPassword(authorization, user.id, resetPasswordValue);
+      if (!result.password_reset) throw new Error("The server did not confirm the password reset.");
+      setNotice(`Password reset for ${user.username}.`);
+      setResettingUserId(null);
+      setResetPasswordValue("");
+    } catch (resetError) {
+      setError(getErrorMessage(resetError, "Unable to reset the password."));
+    } finally {
+      setResetPending(false);
+    }
   }
 
   async function testConnectivity(machine: Machine) {
@@ -510,7 +534,45 @@ export function AdministrationPage() {
                     <td>{user.last_login ? formatDate(user.last_login) : "Never"}</td>
                     <td className="admin-actions">
                       <button className="button button-small button-secondary" type="button" onClick={() => void changeUser(user)}>{user.is_active ? "Deactivate" : "Activate"}</button>
-                      <button className="button button-small button-secondary" type="button" onClick={() => void resetPassword(user)}>Reset password</button>
+                      {resettingUserId === user.id ? (
+                        <form className="password-reset-form" onSubmit={(event) => void resetPassword(event, user)}>
+                          <label className="field">
+                            <span>New password for {user.username}</span>
+                            <input
+                              type="password"
+                              autoComplete="new-password"
+                              required
+                              value={resetPasswordValue}
+                              onChange={(event) => setResetPasswordValue(event.target.value)}
+                              disabled={resetPending}
+                            />
+                          </label>
+                          <button className="button button-small button-primary" type="submit" disabled={resetPending}>
+                            {resetPending ? "Saving…" : "Save password"}
+                          </button>
+                          <button
+                            className="button button-small button-secondary"
+                            type="button"
+                            disabled={resetPending}
+                            onClick={() => {
+                              setResettingUserId(null);
+                              setResetPasswordValue("");
+                              setError("");
+                            }}
+                          >
+                            Cancel
+                          </button>
+                        </form>
+                      ) : (
+                        <button
+                          className="button button-small button-secondary"
+                          type="button"
+                          disabled={resetPending}
+                          onClick={() => startPasswordReset(user)}
+                        >
+                          Reset password
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}</tbody>
@@ -528,12 +590,16 @@ export function AdministrationPage() {
               <span>Action category</span>
               <select
                 value={activityCategory}
-                onChange={(event) => setActivityCategory(event.target.value as ActivityCategory)}
+                onChange={(event) => {
+                  setActivityCategory(event.target.value as ActivityCategory);
+                  setActivityPage(1);
+                }}
               >
                 <option value="all">All actions</option>
                 <option value="login">Login events</option>
                 <option value="viewing">Viewing events</option>
                 <option value="export">Export events</option>
+                <option value="others">Others</option>
               </select>
             </label>
             <button className="button button-secondary" type="button" onClick={() => void exportActivity()}>
@@ -542,6 +608,27 @@ export function AdministrationPage() {
           </div>
           {activity.audit_gaps.map((gap) => <p className="notice-message" key={gap}>{gap}</p>)}
           <ActivityTable events={activity.results} />
+          <nav className="activity-pagination" aria-label="Activity pages">
+            <button
+              className="button button-secondary"
+              type="button"
+              disabled={activity.page <= 1 || loading}
+              onClick={() => setActivityPage(activity.page - 1)}
+            >
+              Previous
+            </button>
+            <span aria-live="polite">
+              Page {activity.page} of {activity.total_pages} ({activity.total} records)
+            </span>
+            <button
+              className="button button-secondary"
+              type="button"
+              disabled={activity.page >= activity.total_pages || loading}
+              onClick={() => setActivityPage(activity.page + 1)}
+            >
+              Next
+            </button>
+          </nav>
         </section>
       )}
 
