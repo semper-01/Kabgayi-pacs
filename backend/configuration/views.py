@@ -1,8 +1,10 @@
 """Administrator-only APIs for PACS operations and staged configuration."""
+import csv
 import ipaddress
+import json
 import re
 import socket
-from io import BytesIO
+from io import BytesIO, StringIO
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
@@ -11,6 +13,8 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
 from django.db import DatabaseError, IntegrityError, connection, transaction
+from django.db.models.deletion import ProtectedError
+from django.http import HttpResponse
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.authentication import BasicAuthentication, SessionAuthentication
@@ -199,19 +203,39 @@ def users(request):
             ]
         )
 
-    username = str(request.data.get("username", "")).strip()
-    email = str(request.data.get("email", "")).strip()
+    username_value = request.data.get("username", "")
+    email_value = request.data.get("email", "")
     account_type = request.data.get("account_type", "staff")
     password = request.data.get("password", "")
-    if not username or account_type not in ("staff", "administrator"):
+    if not isinstance(username_value, str) or not username_value.strip():
         return Response(
-            {"error": "A username and an existing account type are required."},
+            {"errors": {"username": ["Username is required."]}},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    username = username_value.strip()
+    if not isinstance(email_value, str):
+        return Response(
+            {"errors": {"email": ["Email address must be text."]}},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    email = email_value.strip().lower()
+    if not isinstance(account_type, str) or account_type not in (
+        "staff",
+        "administrator",
+    ):
+        return Response(
+            {"errors": {"account_type": ["Select Staff or Administrator."]}},
             status=status.HTTP_400_BAD_REQUEST,
         )
     if not isinstance(password, str) or not password:
         return Response(
-            {"error": "An initial password is required."},
+            {"errors": {"password": ["An initial password is required."]}},
             status=status.HTTP_400_BAD_REQUEST,
+        )
+    if User.objects.filter(username=username).exists():
+        return Response(
+            {"errors": {"username": ["That username is already in use."]}},
+            status=status.HTTP_409_CONFLICT,
         )
     user = User(
         username=username,
@@ -223,21 +247,33 @@ def users(request):
         user.full_clean(exclude=["password"])
         validate_password(password, user=user)
     except ValidationError as exc:
-        return Response({"error": exc.messages}, status=status.HTTP_400_BAD_REQUEST)
-    user.set_password(password)
-    try:
-        user.save()
-    except IntegrityError:
+        field_errors = {
+            field: [str(error) for error in errors]
+            for field, errors in getattr(exc, "error_dict", {}).items()
+        }
         return Response(
-            {"error": "A user with this username already exists."},
-            status=status.HTTP_409_CONFLICT,
+            {
+                "error": " ".join(exc.messages),
+                "errors": field_errors,
+            },
+            status=status.HTTP_400_BAD_REQUEST,
         )
-    record_event(
-        AuditEvent.EventType.ADMIN_CHANGE,
-        user=request.user,
-        request=request,
-        details={"action": "user_created", "target_user": user.get_username()},
-    )
+    user.set_password(password)
+    with transaction.atomic():
+        try:
+            with transaction.atomic():
+                user.save()
+        except IntegrityError:
+            return Response(
+                {"errors": {"username": ["That username is already in use."]}},
+                status=status.HTTP_409_CONFLICT,
+            )
+        record_event(
+            AuditEvent.EventType.ADMIN_CHANGE,
+            user=request.user,
+            request=request,
+            details={"action": "user_created", "target_user": user.get_username()},
+        )
     return Response(
         {
             "id": user.pk,
@@ -308,15 +344,88 @@ def user_action(request, user_id):
         validate_password(new_password, user=target)
     except ValidationError as exc:
         return Response({"error": exc.messages}, status=status.HTTP_400_BAD_REQUEST)
-    target.set_password(new_password)
-    target.save(update_fields=["password"])
-    record_event(
-        AuditEvent.EventType.PASSWORD_RESET,
-        user=request.user,
-        request=request,
-        details={"target_user": target.get_username()},
-    )
+    with transaction.atomic():
+        target.set_password(new_password)
+        target.save(update_fields=["password"])
+        record_event(
+            AuditEvent.EventType.PASSWORD_RESET,
+            user=request.user,
+            request=request,
+            details={"target_user": target.get_username()},
+        )
     return Response({"id": target.pk, "password_reset": True})
+
+
+ACTIVITY_CATEGORIES = {"all", "login", "viewing", "export"}
+
+
+def _activity_events(category, limit=None):
+    if category not in ACTIVITY_CATEGORIES:
+        raise ValueError("Choose all, login, viewing, or export.")
+
+    events = []
+    if category != "export":
+        audit_events = AuditEvent.objects.all()
+        if category == "login":
+            audit_events = audit_events.filter(event_type=AuditEvent.EventType.LOGIN)
+        elif category == "viewing":
+            audit_events = audit_events.filter(event_type=AuditEvent.EventType.VIEWING)
+        if limit is not None:
+            audit_events = audit_events[:limit]
+        events.extend(_audit_display(event) for event in audit_events)
+
+    if category in ("all", "viewing"):
+        sessions = ViewingSession.objects.select_related("user").order_by("-opened_at")
+        if limit is not None:
+            sessions = sessions[:limit]
+        events.extend(
+            {
+                "id": f"view-{session.pk}",
+                "event_type": AuditEvent.EventType.VIEWING,
+                "label": "Viewing",
+                "outcome": "active" if session.is_active else "closed",
+                "username": session.user.get_username(),
+                "source_ip": None,
+                "details": {"study_id": session.study_id},
+                "created_at": session.opened_at.isoformat(),
+            }
+            for session in sessions
+        )
+
+    events.sort(key=lambda event: event["created_at"], reverse=True)
+    return events[:limit] if limit is not None else events
+
+
+def _safe_audit_context(value):
+    if isinstance(value, dict):
+        return {
+            key: _safe_audit_context(item)
+            for key, item in value.items()
+            if not re.search(
+                r"password|secret|token|credential|authorization",
+                str(key),
+                re.IGNORECASE,
+            )
+        }
+    if isinstance(value, list):
+        return [_safe_audit_context(item) for item in value]
+    return value
+
+
+def _csv_safe(value):
+    text = str(value if value is not None else "")
+    if text.lstrip(" \t\r\n").startswith(("=", "+", "-", "@")):
+        return "'" + text
+    return text
+
+
+def _activity_gaps():
+    return [
+        "The Orthanc DICOM receiver is not wired to report incoming AE/IP origins.",
+        "Failed sign-in attempts are not recorded by the existing Basic-authentication boundary.",
+        "Viewing start/end events are recorded from Phase 9 onward; earlier viewing history is unavailable.",
+        "Study export actions are not currently recorded as audit events; the Export filter is empty.",
+    ]
 
 
 @api_view(["GET"])
@@ -325,32 +434,65 @@ def activity(request):
     denied = _forbidden(request)
     if denied:
         return denied
-    events = [_audit_display(event) for event in AuditEvent.objects.all()[:100]]
-    sessions = ViewingSession.objects.select_related("user").order_by("-opened_at")[:100]
-    events.extend(
-        {
-            "id": f"view-{session.pk}",
-            "event_type": AuditEvent.EventType.VIEWING,
-            "label": "Viewing",
-            "outcome": "active" if session.is_active else "closed",
-            "username": session.user.get_username(),
-            "source_ip": None,
-            "details": {"study_id": session.study_id},
-            "created_at": session.opened_at.isoformat(),
-        }
-        for session in sessions
-    )
-    events.sort(key=lambda event: event["created_at"], reverse=True)
+    category = request.query_params.get("category", "all")
+    if category not in ACTIVITY_CATEGORIES:
+        return Response(
+            {"error": "Choose all, login, viewing, or export."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
     return Response(
         {
-            "results": events[:150],
-            "audit_gaps": [
-                "The Orthanc DICOM receiver is not wired to report incoming AE/IP origins.",
-                "Failed sign-in attempts are not recorded by the existing Basic-authentication boundary.",
-                "Legacy login/viewing events from before Phase 9 are not available.",
-            ],
+            "results": _activity_events(category, limit=150),
+            "audit_gaps": _activity_gaps(),
         }
     )
+
+
+@api_view(["GET"])
+@administrator_required
+def activity_export(request):
+    denied = _forbidden(request)
+    if denied:
+        return denied
+    category = request.query_params.get("category", "all")
+    if category not in ACTIVITY_CATEGORIES:
+        return Response(
+            {"error": "Choose all, login, viewing, or export."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    output = StringIO(newline="")
+    writer = csv.writer(output)
+    writer.writerow(
+        ("timestamp", "actor", "action", "outcome", "source_ip", "target_or_context")
+    )
+    for event in _activity_events(category):
+        context = json.dumps(
+            _safe_audit_context(event["details"]),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        writer.writerow(
+            _csv_safe(value)
+            for value in (
+                event["created_at"],
+                event["username"] or "System",
+                f'{event["label"]} - {event["details"].get("action", "")}'.rstrip(
+                    " -"
+                ),
+                event["outcome"],
+                event["source_ip"],
+                context,
+            )
+        )
+    response = HttpResponse(
+        output.getvalue().encode("utf-8"),
+        content_type="text/csv; charset=utf-8",
+    )
+    response["Content-Disposition"] = (
+        f'attachment; filename="pacs-activity-{category}.csv"'
+    )
+    response["Cache-Control"] = "private, no-store"
+    return response
 
 
 @api_view(["GET"])
@@ -406,6 +548,31 @@ def _service_health():
     }
 
 
+def _create_or_reuse_change(*, change_type, values, user):
+    with transaction.atomic():
+        type(user).objects.select_for_update().get(pk=user.pk)
+        existing = ConfigurationChange.objects.filter(
+            change_type=change_type,
+            created_by=user,
+            state__in=(
+                ConfigurationChange.State.EDIT,
+                ConfigurationChange.State.VALIDATED,
+                ConfigurationChange.State.REVIEWED,
+            ),
+        )
+        for change in existing:
+            if change.proposed_values == values:
+                return change, False
+        return (
+            ConfigurationChange.objects.create(
+                change_type=change_type,
+                proposed_values=values,
+                created_by=user,
+            ),
+            True,
+        )
+
+
 @api_view(["GET", "POST"])
 @administrator_required
 def machines(request):
@@ -424,12 +591,79 @@ def machines(request):
             {"error": "Provide a machine_create or machine_update change and values."},
             status=status.HTTP_400_BAD_REQUEST,
         )
-    change = ConfigurationChange.objects.create(
+    change, created = _create_or_reuse_change(
         change_type=change_type,
-        proposed_values=values,
-        created_by=request.user,
+        values=values,
+        user=request.user,
     )
-    return Response(_change_payload(change), status=status.HTTP_201_CREATED)
+    return Response(
+        _change_payload(change),
+        status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+    )
+
+
+@api_view(["DELETE"])
+@administrator_required
+def delete_machine(request, machine_id):
+    denied = _forbidden(request)
+    if denied:
+        return denied
+    if request.data.get("confirm") is not True:
+        return Response(
+            {"error": "Explicit confirmation is required to delete a machine registration."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    try:
+        with transaction.atomic():
+            machine = Machine.objects.select_for_update().get(pk=machine_id)
+            if machine.enabled:
+                return Response(
+                    {"error": "Disable the machine through the staged workflow before deleting its registration."},
+                    status=status.HTTP_409_CONFLICT,
+                )
+            if StudyMachineAssociation.objects.filter(machine=machine).exists():
+                return Response(
+                    {"error": "This machine has validated study associations. Keep it registered and disabled to preserve historical provenance."},
+                    status=status.HTTP_409_CONFLICT,
+                )
+            active_changes = ConfigurationChange.objects.filter(
+                change_type="machine_update",
+                state__in=(
+                    ConfigurationChange.State.EDIT,
+                    ConfigurationChange.State.VALIDATED,
+                    ConfigurationChange.State.REVIEWED,
+                ),
+            ).values_list("proposed_values", flat=True)
+            if any(
+                isinstance(values, dict) and values.get("id") == machine.pk
+                for values in active_changes
+            ):
+                return Response(
+                    {"error": "Cancel or apply pending changes for this machine before deleting it."},
+                    status=status.HTTP_409_CONFLICT,
+                )
+            display_name = machine.display_name
+            remote_ae_title = machine.remote_ae_title
+            machine.delete()
+            record_event(
+                AuditEvent.EventType.MACHINE_CONFIGURATION,
+                user=request.user,
+                request=request,
+                details={
+                    "action": "machine_registration_deleted",
+                    "display_name": display_name,
+                    "remote_ae_title": remote_ae_title,
+                    "orthanc_studies_modified": False,
+                },
+            )
+    except Machine.DoesNotExist:
+        return Response({"error": "Machine not found."}, status=status.HTTP_404_NOT_FOUND)
+    except ProtectedError:
+        return Response(
+            {"error": "This machine has historical study associations and cannot be deleted."},
+            status=status.HTTP_409_CONFLICT,
+        )
+    return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 @api_view(["POST"])
@@ -657,12 +891,53 @@ def configuration_changes(request):
             {"error": "A supported change_type and values object are required."},
             status=status.HTTP_400_BAD_REQUEST,
         )
-    change = ConfigurationChange.objects.create(
+    change, created = _create_or_reuse_change(
         change_type=change_type,
-        proposed_values=values,
-        created_by=request.user,
+        values=values,
+        user=request.user,
     )
-    return Response(_change_payload(change), status=status.HTTP_201_CREATED)
+    return Response(
+        _change_payload(change),
+        status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+    )
+
+
+@api_view(["POST"])
+@administrator_required
+def cancel_configuration_change(request, change_id):
+    denied = _forbidden(request)
+    if denied:
+        return denied
+    try:
+        with transaction.atomic():
+            change = ConfigurationChange.objects.select_for_update().get(
+                pk=change_id
+            )
+            if change.state not in (
+                ConfigurationChange.State.EDIT,
+                ConfigurationChange.State.VALIDATED,
+                ConfigurationChange.State.REVIEWED,
+            ):
+                return Response(
+                    {"error": "Only unapplied configuration changes can be cancelled."},
+                    status=status.HTTP_409_CONFLICT,
+                )
+            change.state = ConfigurationChange.State.CANCELLED
+            change.save(update_fields=["state"])
+            record_event(
+                AuditEvent.EventType.MACHINE_CONFIGURATION
+                if change.change_type.startswith("machine_")
+                else AuditEvent.EventType.NETWORK_CONFIGURATION,
+                user=request.user,
+                request=request,
+                details={
+                    "action": "configuration_change_cancelled",
+                    "change_id": change.pk,
+                },
+            )
+    except ConfigurationChange.DoesNotExist:
+        return Response({"error": "Change not found."}, status=status.HTTP_404_NOT_FOUND)
+    return Response(_change_payload(change))
 
 
 @api_view(["POST"])
@@ -797,80 +1072,103 @@ def apply_configuration_change(request, change_id):
     if denied:
         return denied
     try:
-        change = ConfigurationChange.objects.get(pk=change_id)
+        with transaction.atomic():
+            change = ConfigurationChange.objects.select_for_update().get(
+                pk=change_id
+            )
+            if change.state != ConfigurationChange.State.REVIEWED:
+                return Response(
+                    {"error": "Only reviewed changes can be applied."},
+                    status=status.HTTP_409_CONFLICT,
+                )
+            errors = _validate_change(change)
+            if errors:
+                return Response(
+                    {
+                        "error": "The staged change is no longer valid.",
+                        "validation_errors": errors,
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+            confirmed = request.data.get("confirm_restart") is True
+            if change.restart_required and not confirmed:
+                return Response(
+                    {
+                        "error": "Applying these network settings requires a manual PACS restart.",
+                        "impact": "The DICOM listener may be unavailable during the restart. No automatic restart will be performed.",
+                        "confirmation_required": True,
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+            values = change.proposed_values
+            if change.change_type == "network":
+                configuration, _ = OperationalConfiguration.objects.get_or_create(
+                    pk=1
+                )
+                configuration.ae_title = values["ae_title"]
+                configuration.dicom_port = int(values["dicom_port"])
+                configuration.lan_ip = values["lan_ip"] or None
+                configuration.updated_by = request.user
+                configuration.save()
+            elif change.change_type == "machine_create":
+                Machine.objects.create(**values)
+            else:
+                machine = Machine.objects.select_for_update().get(pk=values["id"])
+                for key, value in values.items():
+                    if key != "id":
+                        setattr(machine, key, value)
+                machine.save()
+            change.state = ConfigurationChange.State.APPLIED
+            change.applied_by = request.user
+            change.applied_at = timezone.now()
+            change.restart_confirmed = confirmed
+            change.save(
+                update_fields=[
+                    "state",
+                    "applied_by",
+                    "applied_at",
+                    "restart_confirmed",
+                ]
+            )
+            event_type = (
+                AuditEvent.EventType.NETWORK_CONFIGURATION
+                if change.change_type == "network"
+                else AuditEvent.EventType.MACHINE_CONFIGURATION
+            )
+            record_event(
+                event_type,
+                user=request.user,
+                request=request,
+                details={
+                    "action": "configuration_applied",
+                    "change_id": change.pk,
+                    "change_type": change.change_type,
+                },
+            )
+            if change.restart_required:
+                record_event(
+                    AuditEvent.EventType.RESTART,
+                    user=request.user,
+                    request=request,
+                    details={
+                        "action": "manual_restart_confirmed",
+                        "impact": "DICOM listener may be unavailable during manual restart.",
+                        "automatic_restart_performed": False,
+                    },
+                )
     except ConfigurationChange.DoesNotExist:
         return Response({"error": "Change not found."}, status=status.HTTP_404_NOT_FOUND)
-    if change.state != ConfigurationChange.State.REVIEWED:
+    except Machine.DoesNotExist:
         return Response(
-            {"error": "Only reviewed changes can be applied."},
+            {"error": "The machine for this staged update no longer exists."},
             status=status.HTTP_409_CONFLICT,
         )
-    confirmed = request.data.get("confirm_restart") is True
-    if change.restart_required and not confirmed:
+    except IntegrityError:
         return Response(
-            {
-                "error": "Applying these network settings requires a manual PACS restart.",
-                "impact": "The DICOM listener may be unavailable during the restart. No automatic restart will be performed.",
-                "confirmation_required": True,
-            },
+            {"error": "The staged change conflicts with a value already in use."},
             status=status.HTTP_409_CONFLICT,
         )
 
-    with transaction.atomic():
-        values = change.proposed_values
-        if change.change_type == "network":
-            configuration, _ = OperationalConfiguration.objects.get_or_create(pk=1)
-            configuration.ae_title = values["ae_title"]
-            configuration.dicom_port = int(values["dicom_port"])
-            configuration.lan_ip = values["lan_ip"] or None
-            configuration.updated_by = request.user
-            configuration.save()
-        elif change.change_type == "machine_create":
-            Machine.objects.create(**values)
-        else:
-            machine = Machine.objects.get(pk=values["id"])
-            for key, value in values.items():
-                if key != "id":
-                    setattr(machine, key, value)
-            machine.save()
-        change.state = ConfigurationChange.State.APPLIED
-        change.applied_by = request.user
-        change.applied_at = timezone.now()
-        change.restart_confirmed = confirmed
-        change.save(
-            update_fields=[
-                "state",
-                "applied_by",
-                "applied_at",
-                "restart_confirmed",
-            ]
-        )
-    event_type = (
-        AuditEvent.EventType.NETWORK_CONFIGURATION
-        if change.change_type == "network"
-        else AuditEvent.EventType.MACHINE_CONFIGURATION
-    )
-    record_event(
-        event_type,
-        user=request.user,
-        request=request,
-        details={
-            "action": "configuration_applied",
-            "change_id": change.pk,
-            "change_type": change.change_type,
-        },
-    )
-    if change.restart_required:
-        record_event(
-            AuditEvent.EventType.RESTART,
-            user=request.user,
-            request=request,
-            details={
-                "action": "manual_restart_confirmed",
-                "impact": "DICOM listener may be unavailable during manual restart.",
-                "automatic_restart_performed": False,
-            },
-        )
     return Response(
         {
             **_change_payload(change),
@@ -899,13 +1197,10 @@ def validate_dicom_import(request):
     try:
         seen_sop_uids = set()
         for uploaded, content, sop_instance_uid in files:
-            matches = orthanc.lookup_dicom(content)
-            if not isinstance(matches, list):
-                raise OrthancProtocolError("Orthanc returned an unexpected lookup response.")
+            matches = orthanc.find_instances_by_sop_uid(sop_instance_uid)
             duplicates = [
-                {"type": item.get("Type"), "id": item.get("ID")}
-                for item in matches
-                if isinstance(item, dict) and item.get("Type") == "Instance"
+                {"type": "Instance", "id": instance_id}
+                for instance_id in matches
             ]
             if sop_instance_uid in seen_sop_uids:
                 duplicates.append({"type": "BatchDuplicate", "id": sop_instance_uid})
@@ -951,13 +1246,10 @@ def import_dicom(request):
     try:
         seen_sop_uids = set()
         for uploaded, content, sop_instance_uid in files:
-            matches = orthanc.lookup_dicom(content)
-            if not isinstance(matches, list):
-                raise OrthancProtocolError("Orthanc returned an unexpected lookup response.")
+            matches = orthanc.find_instances_by_sop_uid(sop_instance_uid)
             duplicates = [
-                item
-                for item in matches
-                if isinstance(item, dict) and item.get("Type") == "Instance"
+                {"Type": "Instance", "ID": instance_id}
+                for instance_id in matches
             ]
             if sop_instance_uid in seen_sop_uids:
                 duplicates.append(
@@ -1028,12 +1320,21 @@ def import_dicom(request):
                 raise OrthancProtocolError("Orthanc returned an unexpected import response.")
             imported_ids.append(stored["ID"])
             verified = orthanc.get_instance(stored["ID"])
+            if not isinstance(verified, dict):
+                raise OrthancProtocolError("Orthanc returned an unexpected instance response.")
+            series_id = verified.get("ParentSeries")
+            if verified.get("ID") != stored["ID"] or not isinstance(series_id, str):
+                raise OrthancProtocolError("Orthanc could not verify the imported instance's series.")
+            series = orthanc.get_series_resource(series_id)
+            study_id = series.get("ParentStudy") if isinstance(series, dict) else None
+            if not isinstance(study_id, str) or not study_id:
+                raise OrthancProtocolError("Orthanc could not verify the imported study.")
             summary.append(
                 {
                     "filename": filename,
                     "result": "imported",
                     "instance_id": stored["ID"],
-                    "study_id": verified.get("ParentStudy", ""),
+                    "study_id": study_id,
                 }
             )
     except OrthancUnavailableError:

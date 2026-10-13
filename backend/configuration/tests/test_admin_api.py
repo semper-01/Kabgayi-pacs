@@ -91,6 +91,92 @@ class AdministrationApiTests(TestCase):
             )
         )
 
+    def test_user_creation_validates_email_and_duplicate_username(self):
+        self.as_admin()
+        payload = {
+            "username": "email-check",
+            "email": "not-an-email",
+            "account_type": "staff",
+            "password": "temporary-password",
+        }
+        invalid_email = self.client.post("/api/admin/users/", payload, format="json")
+        self.assertEqual(invalid_email.status_code, 400)
+        self.assertIn("email", invalid_email.json()["errors"])
+        self.assertFalse(get_user_model().objects.filter(username="email-check").exists())
+
+        payload["email"] = "  PERSON@example.invalid "
+        created = self.client.post("/api/admin/users/", payload, format="json")
+        self.assertEqual(created.status_code, 201)
+        saved_user = get_user_model().objects.get(username="email-check")
+        self.assertEqual(saved_user.email, "person@example.invalid")
+        self.assertTrue(saved_user.check_password("temporary-password"))
+        self.client.force_authenticate(user=None)
+        self.assertTrue(
+            self.client.login(
+                username="email-check",
+                password="temporary-password",
+            )
+        )
+        self.assertEqual(self.client.get("/api/auth/session/").status_code, 200)
+
+        self.as_admin()
+        payload["email"] = "other@example.invalid"
+        duplicate = self.client.post("/api/admin/users/", payload, format="json")
+        self.assertEqual(duplicate.status_code, 409)
+        self.assertIn("username", duplicate.json()["errors"])
+        self.assertEqual(get_user_model().objects.filter(username="email-check").count(), 1)
+
+    def test_non_unique_email_policy_is_preserved(self):
+        self.as_admin()
+        for username in ("same-email-one", "same-email-two"):
+            response = self.client.post(
+                "/api/admin/users/",
+                {
+                    "username": username,
+                    "email": "shared@example.invalid",
+                    "account_type": "staff",
+                    "password": "temporary-password",
+                },
+                format="json",
+            )
+            self.assertEqual(response.status_code, 201)
+        self.assertEqual(
+            get_user_model().objects.filter(email="shared@example.invalid").count(),
+            2,
+        )
+
+    def test_password_reset_changes_authentication_and_stores_a_hash(self):
+        self.as_admin()
+        target = get_user_model().objects.create_user(
+            username="password-reset-target",
+            password="OldControlledPass99!",
+            account_type="staff",
+        )
+
+        response = self.client.post(
+            f"/api/admin/users/{target.pk}/",
+            {"new_password": "NewControlledPass99!"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        target.refresh_from_db()
+        self.client.force_authenticate(user=None)
+        self.assertFalse(
+            self.client.login(
+                username="password-reset-target",
+                password="OldControlledPass99!",
+            )
+        )
+        self.assertTrue(
+            self.client.login(
+                username="password-reset-target",
+                password="NewControlledPass99!",
+            )
+        )
+        self.assertEqual(self.client.get("/api/auth/session/").status_code, 200)
+        self.assertNotEqual(target.password, "NewControlledPass99!")
+
     def test_only_the_two_existing_account_types_are_accepted(self):
         self.as_admin()
 
@@ -159,6 +245,139 @@ class AdministrationApiTests(TestCase):
         self.assertEqual(applied.status_code, 200)
         self.assertTrue(Machine.objects.get(remote_ae_title="CT_ROOM_1").enabled)
 
+    def test_machine_registration_draft_can_be_cancelled_and_retried_safely(self):
+        self.as_admin()
+        values = {
+            "display_name": "CT Room 2",
+            "modality": "CT",
+            "remote_ae_title": "CT_ROOM_2",
+            "ip_address": "192.0.2.16",
+            "port": 4242,
+            "enabled": True,
+        }
+        path = "/api/admin/machines/"
+        first = self.client.post(
+            path,
+            {"change_type": "machine_create", "values": values},
+            format="json",
+        )
+        second = self.client.post(
+            path,
+            {"change_type": "machine_create", "values": values},
+            format="json",
+        )
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.json()["id"], second.json()["id"])
+
+        cancelled = self.client.post(
+            f"/api/admin/configuration-changes/{first.json()['id']}/cancel/",
+            {},
+            format="json",
+        )
+        self.assertEqual(cancelled.status_code, 200)
+        self.assertEqual(cancelled.json()["state"], "cancelled")
+        self.assertFalse(Machine.objects.filter(remote_ae_title="CT_ROOM_2").exists())
+
+    def test_machine_deletion_requires_confirmation_and_preserves_associated_history(self):
+        self.as_admin()
+        machine = Machine.objects.create(
+            display_name="CT Room 3",
+            modality="CT",
+            remote_ae_title="CT_ROOM_3",
+            ip_address="192.0.2.17",
+            port=4242,
+            enabled=False,
+        )
+        path = f"/api/admin/machines/{machine.pk}/"
+        no_confirmation = self.client.delete(path, {}, format="json")
+        self.assertEqual(no_confirmation.status_code, 400)
+        self.assertTrue(Machine.objects.filter(pk=machine.pk).exists())
+
+        StudyMachineAssociation.objects.create(
+            study_id="orthanc-study-id",
+            machine=machine,
+            source_ae_title=machine.remote_ae_title,
+            source_ip_address=machine.ip_address,
+        )
+        blocked = self.client.delete(path, {"confirm": True}, format="json")
+        self.assertEqual(blocked.status_code, 409)
+        self.assertTrue(Machine.objects.filter(pk=machine.pk).exists())
+        self.assertTrue(
+            StudyMachineAssociation.objects.filter(
+                study_id="orthanc-study-id",
+                machine=machine,
+            ).exists()
+        )
+
+    def test_machine_without_dependencies_can_be_deleted_by_administrator(self):
+        self.as_admin()
+        machine = Machine.objects.create(
+            display_name="Unused CT",
+            modality="CT",
+            remote_ae_title="UNUSED_CT",
+            ip_address="192.0.2.18",
+            port=4242,
+            enabled=False,
+        )
+
+        response = self.client.delete(
+            f"/api/admin/machines/{machine.pk}/",
+            {"confirm": True},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(Machine.objects.filter(pk=machine.pk).exists())
+
+    def test_staff_cannot_cancel_or_delete_machine_registrations(self):
+        machine = Machine.objects.create(
+            display_name="Staff test CT",
+            modality="CT",
+            remote_ae_title="STAFF_TEST_CT",
+            ip_address="192.0.2.19",
+            port=4242,
+            enabled=False,
+        )
+        self.as_staff()
+
+        deleted = self.client.delete(
+            f"/api/admin/machines/{machine.pk}/",
+            {"confirm": True},
+            format="json",
+        )
+        self.assertEqual(deleted.status_code, 403)
+        self.assertTrue(Machine.objects.filter(pk=machine.pk).exists())
+
+    def test_activity_categories_and_csv_export_are_authorized_and_safe(self):
+        self.as_admin()
+        login = AuditEvent.objects.create(
+            event_type=AuditEvent.EventType.LOGIN,
+            username='=HYPERLINK("https://example.invalid")',
+            outcome="success",
+            details={"action": "login", "password": "secret"},
+        )
+        AuditEvent.objects.create(
+            event_type=AuditEvent.EventType.ADMIN_CHANGE,
+            username="admin",
+            outcome="success",
+            details={"action": "user_created"},
+        )
+
+        filtered = self.client.get("/api/admin/activity/?category=login")
+        self.assertEqual(filtered.status_code, 200)
+        self.assertTrue(all(event["event_type"] == "login" for event in filtered.json()["results"]))
+        csv_response = self.client.get("/api/admin/activity/export/?category=login")
+        self.assertEqual(csv_response.status_code, 200)
+        self.assertEqual(csv_response["Content-Type"], "text/csv; charset=utf-8")
+        self.assertIn(',"\'=HYPERLINK', csv_response.content.decode())
+        self.assertNotIn("secret", csv_response.content.decode())
+        self.assertNotIn(',"=HYPERLINK', csv_response.content.decode())
+
+        self.as_staff()
+        denied = self.client.get("/api/admin/activity/export/?category=login")
+        self.assertEqual(denied.status_code, 403)
+
     def test_network_apply_requires_explicit_restart_confirmation_and_never_restarts(self):
         self.as_admin()
         staged = self.client.post(
@@ -209,7 +428,7 @@ class AdministrationApiTests(TestCase):
         self.as_admin()
         archive = SimpleUploadedFile("historic.zip", b"PK\x03\x04")
 
-        with patch.object(OrthancService, "lookup_dicom") as lookup:
+        with patch.object(OrthancService, "find_instances_by_sop_uid") as lookup:
             response = self.client.post(
                 "/api/admin/dicom-import/validate/",
                 {"files": archive},
@@ -224,8 +443,8 @@ class AdministrationApiTests(TestCase):
         dicom = SimpleUploadedFile("scan.dcm", _dicom_instance())
         with patch.object(
             OrthancService,
-            "lookup_dicom",
-            return_value=[{"Type": "Instance", "ID": "existing-instance"}],
+            "find_instances_by_sop_uid",
+            return_value=["existing-instance"],
         ):
             response = self.client.post(
                 "/api/admin/dicom-import/import/",
@@ -241,7 +460,7 @@ class AdministrationApiTests(TestCase):
         content = _dicom_instance()
         dicom = SimpleUploadedFile("scan.dcm", content)
         with (
-            patch.object(OrthancService, "lookup_dicom", return_value=[]),
+            patch.object(OrthancService, "find_instances_by_sop_uid", return_value=[]),
             patch.object(
                 OrthancService,
                 "store_dicom",
@@ -250,7 +469,12 @@ class AdministrationApiTests(TestCase):
             patch.object(
                 OrthancService,
                 "get_instance",
-                return_value={"ID": "new-instance", "ParentStudy": "study-1"},
+                return_value={"ID": "new-instance", "ParentSeries": "series-1"},
+            ),
+            patch.object(
+                OrthancService,
+                "get_series_resource",
+                return_value={"ID": "series-1", "ParentStudy": "study-1"},
             ),
         ):
             response = self.client.post(
@@ -273,8 +497,8 @@ class AdministrationApiTests(TestCase):
         with (
             patch.object(
                 OrthancService,
-                "lookup_dicom",
-                return_value=[{"Type": "Instance", "ID": "existing-instance"}],
+                "find_instances_by_sop_uid",
+                return_value=["existing-instance"],
             ),
             patch.object(OrthancService, "store_dicom") as store,
         ):
@@ -295,7 +519,7 @@ class AdministrationApiTests(TestCase):
             SimpleUploadedFile("one.dcm", content),
             SimpleUploadedFile("copy.dcm", content),
         ]
-        with patch.object(OrthancService, "lookup_dicom", return_value=[]):
+        with patch.object(OrthancService, "find_instances_by_sop_uid", return_value=[]):
             validation = self.client.post(
                 "/api/admin/dicom-import/validate/",
                 {"files": validation_files},
@@ -314,7 +538,7 @@ class AdministrationApiTests(TestCase):
             SimpleUploadedFile("copy.dcm", content),
         ]
         with (
-            patch.object(OrthancService, "lookup_dicom", return_value=[]),
+            patch.object(OrthancService, "find_instances_by_sop_uid", return_value=[]),
             patch.object(
                 OrthancService,
                 "store_dicom",
@@ -323,7 +547,12 @@ class AdministrationApiTests(TestCase):
             patch.object(
                 OrthancService,
                 "get_instance",
-                return_value={"ID": "new-instance", "ParentStudy": "study-1"},
+                return_value={"ID": "new-instance", "ParentSeries": "series-1"},
+            ),
+            patch.object(
+                OrthancService,
+                "get_series_resource",
+                return_value={"ID": "series-1", "ParentStudy": "study-1"},
             ),
         ):
             imported = self.client.post(
@@ -343,9 +572,9 @@ class AdministrationApiTests(TestCase):
         self.as_admin()
         replacement = _dicom_instance()
         dicom = SimpleUploadedFile("scan.dcm", replacement)
-        existing = {"Type": "Instance", "ID": "existing-instance"}
+        existing = "existing-instance"
         with (
-            patch.object(OrthancService, "lookup_dicom", return_value=[existing]),
+            patch.object(OrthancService, "find_instances_by_sop_uid", return_value=[existing]),
             patch.object(
                 OrthancService,
                 "get_instance_file",
@@ -360,7 +589,12 @@ class AdministrationApiTests(TestCase):
             patch.object(
                 OrthancService,
                 "get_instance",
-                return_value={"ID": "replacement-instance", "ParentStudy": "study-1"},
+                return_value={"ID": "replacement-instance", "ParentSeries": "series-1"},
+            ),
+            patch.object(
+                OrthancService,
+                "get_series_resource",
+                return_value={"ID": "series-1", "ParentStudy": "study-1"},
             ),
         ):
             response = self.client.post(

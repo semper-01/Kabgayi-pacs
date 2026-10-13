@@ -262,6 +262,17 @@ input {
   border-color: #8998a5;
 }
 
+.button-danger {
+  color: #8f2525;
+  background: #ffffff;
+  border-color: #c78080;
+}
+
+.button-danger:hover:not(:disabled) {
+  background: #fff4f4;
+  border-color: #a94343;
+}
+
 .button-quiet {
   color: #344352;
   background: transparent;
@@ -874,6 +885,21 @@ input {
   align-items: center;
   gap: 7px;
   min-width: 190px;
+}
+
+.audit-controls {
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.audit-controls h2 {
+  flex: 1 1 220px;
+  margin: 0;
+}
+
+.audit-controls .field {
+  flex: 0 1 220px;
+  margin: 0;
 }
 
 .admin-actions .field {

@@ -117,6 +117,39 @@ class OrthancServiceTests(SimpleTestCase):
         )
 
     @patch("core.services.orthanc.urlopen")
+    def test_get_series_resource_uses_series_endpoint(self, mock_urlopen):
+        series = {"ID": "series-1", "ParentStudy": "study-1"}
+        mock_urlopen.return_value = FakeResponse(json.dumps(series).encode())
+
+        self.assertEqual(
+            self.make_service().get_series_resource("series-1"),
+            series,
+        )
+        self.assertEqual(
+            mock_urlopen.call_args.args[0].full_url,
+            "http://orthanc:8042/series/series-1",
+        )
+
+    @patch("core.services.orthanc.urlopen")
+    def test_find_instances_by_sop_uid_uses_instance_level_query(self, mock_urlopen):
+        mock_urlopen.return_value = FakeResponse(json.dumps(["instance-1"]).encode())
+
+        result = self.make_service().find_instances_by_sop_uid("1.2.3.4")
+
+        self.assertEqual(result, ["instance-1"])
+        request = mock_urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, "http://orthanc:8042/tools/find")
+        self.assertEqual(request.get_method(), "POST")
+        self.assertEqual(
+            json.loads(request.data),
+            {
+                "Level": "Instance",
+                "Query": {"SOPInstanceUID": "1.2.3.4"},
+                "Expand": False,
+            },
+        )
+
+    @patch("core.services.orthanc.urlopen")
     def test_connection_failure_raises_unavailable(self, mock_urlopen):
         mock_urlopen.side_effect = URLError("connection refused")
         with self.assertRaises(OrthancUnavailableError):

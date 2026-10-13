@@ -56,6 +56,7 @@ class ConfigurationChange(models.Model):
         VALIDATED = "validated", "Validated"
         REVIEWED = "reviewed", "Reviewed"
         APPLIED = "applied", "Applied"
+        CANCELLED = "cancelled", "Cancelled"
 
     change_type = models.CharField(max_length=24)
     proposed_values = models.JSONField()

@@ -102,6 +102,12 @@ class OrthancService:
             f"/studies/{quote(study_id, safe='')}/series", method="GET"
         )
 
+    def get_series_resource(self, series_id):
+        """Return one Orthanc series, including its parent study identifier."""
+        return self._request_json(
+            f"/series/{quote(series_id, safe='')}", method="GET"
+        )
+
     def get_study_instances(self, study_id):
         """Return instance IDs listed in the study's Orthanc series resources."""
         series_resources = self.get_series(study_id)
@@ -137,6 +143,23 @@ class OrthancService:
             body=content,
             content_type="application/dicom",
         )
+
+    def find_instances_by_sop_uid(self, sop_instance_uid):
+        """Find stored instances by their unique DICOM SOP Instance UID."""
+        result = self._request_json(
+            "/tools/find",
+            method="POST",
+            body={
+                "Level": "Instance",
+                "Query": {"SOPInstanceUID": sop_instance_uid},
+                "Expand": False,
+            },
+        )
+        if not isinstance(result, list) or any(
+            not isinstance(instance_id, str) for instance_id in result
+        ):
+            raise OrthancProtocolError("Orthanc returned an unexpected lookup response.")
+        return result
 
     def store_dicom(self, content):
         """Send one validated DICOM file to Orthanc."""

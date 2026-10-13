@@ -1,4 +1,4 @@
-import { request } from "./client";
+import { request, requestFile } from "./client";
 
 export interface AdminUser {
   id: number;
@@ -54,7 +54,7 @@ export interface ConfigurationChange {
   id: number;
   change_type: string;
   proposed_values: Record<string, string | number | boolean>;
-  state: "edit" | "validated" | "reviewed" | "applied";
+  state: "edit" | "validated" | "reviewed" | "applied" | "cancelled";
   validation_errors: string[];
   restart_required: boolean;
   restart_confirmed: boolean;
@@ -124,10 +124,20 @@ export function resetUserPassword(authorization: string, id: number, new_passwor
   );
 }
 
-export function getActivity(authorization: string) {
+export type ActivityCategory = "all" | "login" | "viewing" | "export";
+
+export function getActivity(authorization: string, category: ActivityCategory = "all") {
   return request<{ results: ActivityEvent[]; audit_gaps: string[] }>(
-    "/api/admin/activity/",
+    `/api/admin/activity/?category=${category}`,
     authorization,
+  );
+}
+
+export function downloadActivity(authorization: string, category: ActivityCategory) {
+  return requestFile(
+    `/api/admin/activity/export/?category=${category}`,
+    authorization,
+    "Unable to download audit activity.",
   );
 }
 
@@ -152,6 +162,14 @@ export function testMachineConnectivity(authorization: string, id: number) {
     `/api/admin/machines/${id}/connectivity/`,
     authorization,
     json({}),
+  );
+}
+
+export function deleteMachine(authorization: string, id: number) {
+  return request<void>(
+    `/api/admin/machines/${id}/`,
+    authorization,
+    json({ confirm: true }, "DELETE"),
   );
 }
 
@@ -200,6 +218,14 @@ export function createConfigurationChange(
 export function validateConfigurationChange(authorization: string, id: number) {
   return request<ConfigurationChange>(
     `/api/admin/configuration-changes/${id}/validate/`,
+    authorization,
+    json({}),
+  );
+}
+
+export function cancelConfigurationChange(authorization: string, id: number) {
+  return request<ConfigurationChange>(
+    `/api/admin/configuration-changes/${id}/cancel/`,
     authorization,
     json({}),
   );

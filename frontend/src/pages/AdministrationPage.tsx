@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
-import { ApiError, getErrorMessage } from "../api/client";
+import { getErrorMessage } from "../api/client";
 import {
   applyConfigurationChange,
+  cancelConfigurationChange,
   checkMachineIdentity,
   createConfigurationChange,
   createUser,
+  deleteMachine,
+  downloadActivity,
   getActivity,
   getMachines,
   getMachineStudies,
@@ -22,6 +25,7 @@ import {
   validateDicomImport,
   verifyMachineStudies,
   type ActivityEvent,
+  type ActivityCategory,
   type AdminUser,
   type ConfigurationChange,
   type ConfigurationValues,
@@ -52,6 +56,7 @@ export function AdministrationPage() {
   const [overview, setOverview] = useState<Awaited<ReturnType<typeof getOverview>> | null>(null);
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [activity, setActivity] = useState<Awaited<ReturnType<typeof getActivity>> | null>(null);
+  const [activityCategory, setActivityCategory] = useState<ActivityCategory>("all");
   const [health, setHealth] = useState<ServiceHealth | null>(null);
   const [machines, setMachines] = useState<Machine[]>([]);
   const [network, setNetwork] = useState<ConfigurationValues | null>(null);
@@ -61,6 +66,15 @@ export function AdministrationPage() {
   const [importValidation, setImportValidation] = useState<ImportValidation | null>(null);
   const [importSummary, setImportSummary] = useState<string[]>([]);
   const [duplicateDecisionRequired, setDuplicateDecisionRequired] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
+  const [importProgress, setImportProgress] = useState<{
+    total: number;
+    completed: number;
+    succeeded: number;
+    skipped: number;
+    failed: number;
+    currentFile: string;
+  } | null>(null);
 
   const refresh = useCallback(async () => {
     if (!authorization) return;
@@ -69,7 +83,7 @@ export function AdministrationPage() {
     try {
       if (section === "System Overview") setOverview(await getOverview(authorization));
       if (section === "Users") setUsers(await getUsers(authorization));
-      if (section === "Activity") setActivity(await getActivity(authorization));
+      if (section === "Activity") setActivity(await getActivity(authorization, activityCategory));
       if (section === "Service Health") setHealth(await getServiceHealth(authorization));
       if (section === "Machine Management") setMachines(await getMachines(authorization));
       if (section === "Network Configuration") {
@@ -80,7 +94,7 @@ export function AdministrationPage() {
     } finally {
       setLoading(false);
     }
-  }, [authorization, section]);
+  }, [activityCategory, authorization, section]);
 
   useEffect(() => {
     void refresh();
@@ -164,6 +178,19 @@ export function AdministrationPage() {
       "Configuration change applied. No service was restarted.",
     );
     setPendingChange(null);
+  }
+
+  async function cancelStagedChange(change: ConfigurationChange) {
+    if (!authorization) return;
+    try {
+      await cancelConfigurationChange(authorization, change.id);
+      setPendingChange(null);
+      setNotice("Unapplied configuration draft cancelled.");
+      setError("");
+      await refresh();
+    } catch (cancelError) {
+      setError(getErrorMessage(cancelError, "Unable to cancel configuration draft."));
+    }
   }
 
   async function advanceChange(change: ConfigurationChange) {
@@ -253,6 +280,18 @@ export function AdministrationPage() {
     }
   }
 
+  async function removeMachine(machine: Machine) {
+    if (!authorization) return;
+    const confirmed = window.confirm(
+      `Permanently delete the registration for ${machine.display_name} (${machine.remote_ae_title})? This does not delete studies. Deletion will be blocked if the machine is enabled or has validated study associations.`,
+    );
+    if (!confirmed) return;
+    await run(
+      () => deleteMachine(authorization, machine.id),
+      `${machine.display_name} registration deleted.`,
+    );
+  }
+
   async function validateFiles(selectedFiles: File[]) {
     if (!authorization || selectedFiles.length === 0) return;
     setFiles(selectedFiles);
@@ -269,23 +308,82 @@ export function AdministrationPage() {
   }
 
   async function importSelected(policy?: "skip" | "overwrite") {
-    if (!authorization || files.length === 0) return;
+    if (!authorization || files.length === 0 || isImporting) return;
+    const batchDuplicates = new Set(
+      (importValidation?.files ?? [])
+        .map((file, index) =>
+          file.duplicates.some((duplicate) => duplicate.type === "BatchDuplicate")
+            ? index
+            : -1,
+        )
+        .filter((index) => index >= 0),
+    );
+    const progress = {
+      total: files.length,
+      completed: 0,
+      succeeded: 0,
+      skipped: 0,
+      failed: 0,
+      currentFile: "",
+    };
+    const results: string[] = [];
+    setImportProgress(progress);
+    setImportSummary([]);
+    setIsImporting(true);
+    setError("");
+    setNotice("");
     try {
-      const result = await importDicom(authorization, files, policy);
-      setImportSummary(
-        result.summary.map((item) => `${item.filename}: ${item.result}`),
-      );
+      for (const [index, file] of files.entries()) {
+        setImportProgress({ ...progress, currentFile: file.name });
+        if (batchDuplicates.has(index)) {
+          progress.skipped += 1;
+          progress.completed += 1;
+          results.push(`${file.name}: skipped_duplicate (duplicate within selected batch)`);
+        } else {
+          try {
+            const result = await importDicom(authorization, [file], policy);
+            const item = result.summary[0];
+            if (!item) throw new Error("The server returned no result for this file.");
+            if (
+              item.result === "imported"
+              && (result.verification.failed || result.verification.verified_count !== 1)
+            ) {
+              throw new Error("Orthanc did not verify the imported instance.");
+            }
+            if (item.result === "imported") progress.succeeded += 1;
+            else progress.skipped += 1;
+            progress.completed += 1;
+            results.push(`${file.name}: ${item.result}`);
+          } catch (fileError) {
+            progress.failed += 1;
+            progress.completed += 1;
+            results.push(`${file.name}: failed — ${getErrorMessage(fileError, "Import failed.")}`);
+          }
+        }
+        setImportProgress({ ...progress, currentFile: "" });
+        setImportSummary([...results]);
+      }
       setNotice(
-        `Import complete. ${result.verification.verified_count} imported file(s) verified in Orthanc.`,
+        `Batch complete: ${progress.succeeded} imported and verified, ${progress.skipped} skipped, ${progress.failed} failed.`,
       );
       setImportValidation(null);
-    } catch (importError) {
-      if (importError instanceof ApiError && importError.status === 409) {
-        setDuplicateDecisionRequired(true);
-        setError("Duplicate files were found. Choose Skip or Overwrite explicitly.");
-      } else {
-        setError(getErrorMessage(importError, "DICOM import failed."));
+      if (progress.failed > 0) {
+        setError(`${progress.failed} file(s) failed. See the per-file results below.`);
       }
+      await refresh();
+    } finally {
+      setIsImporting(false);
+    }
+  }
+
+  async function exportActivity() {
+    if (!authorization) return;
+    try {
+      await downloadActivity(authorization, activityCategory);
+      setNotice("Filtered audit results downloaded as CSV.");
+      setError("");
+    } catch (exportError) {
+      setError(getErrorMessage(exportError, "Unable to download audit activity."));
     }
   }
 
@@ -424,7 +522,24 @@ export function AdministrationPage() {
 
       {!loading && section === "Activity" && activity && (
         <section className="detail-section admin-section">
-          <h2>Audit &amp; activity</h2>
+          <div className="admin-actions audit-controls">
+            <h2>Audit &amp; activity</h2>
+            <label className="field">
+              <span>Action category</span>
+              <select
+                value={activityCategory}
+                onChange={(event) => setActivityCategory(event.target.value as ActivityCategory)}
+              >
+                <option value="all">All actions</option>
+                <option value="login">Login events</option>
+                <option value="viewing">Viewing events</option>
+                <option value="export">Export events</option>
+              </select>
+            </label>
+            <button className="button button-secondary" type="button" onClick={() => void exportActivity()}>
+              Download filtered CSV
+            </button>
+          </div>
           {activity.audit_gaps.map((gap) => <p className="notice-message" key={gap}>{gap}</p>)}
           <ActivityTable events={activity.results} />
         </section>
@@ -455,7 +570,13 @@ export function AdministrationPage() {
               </div>
             </form>
           </section>
-          {pendingChange && <ChangeWorkflow change={pendingChange} onAdvance={() => void advanceChange(pendingChange)} />}
+          {pendingChange && (
+            <ChangeWorkflow
+              change={pendingChange}
+              onAdvance={() => void advanceChange(pendingChange)}
+              onCancel={() => void cancelStagedChange(pendingChange)}
+            />
+          )}
           <section className="detail-section">
             <h2>Registered machines</h2>
             <div className="table-scroll">
@@ -471,6 +592,7 @@ export function AdministrationPage() {
                     onVerify={(ids) => void verifyStudies(machine, ids)}
                     onFilter={() => filterMachineStudies(machine)}
                     onEdit={() => setEditingMachine(machine)}
+                    onDelete={() => void removeMachine(machine)}
                   />
                 ))}</tbody>
               </table>
@@ -486,19 +608,33 @@ export function AdministrationPage() {
           <div className="admin-import-controls">
             <label className="field">
               <span>Individual DICOM files</span>
-              <input type="file" multiple onChange={(event) => void validateFiles(Array.from(event.target.files || []))} />
+              <input type="file" multiple disabled={isImporting} onChange={(event) => void validateFiles(Array.from(event.target.files || []))} />
             </label>
             <label className="field">
               <span>DICOM folder</span>
               <input
                 type="file"
                 multiple
+                disabled={isImporting}
                 ref={(input) => input?.setAttribute("webkitdirectory", "")}
                 onChange={(event) => void validateFiles(Array.from(event.target.files || []))}
               />
             </label>
           </div>
           {files.length > 0 && <p className="result-count">{files.length} selected file(s)</p>}
+          {importProgress && (
+            <div className="import-validation" aria-live="polite">
+              <h3>Import queue progress</h3>
+              <p>
+                {isImporting ? `Processing ${importProgress.currentFile}` : "Batch processing finished"}
+                {" — "}completed {importProgress.completed} of {importProgress.total},
+                {" "}{importProgress.total - importProgress.completed} remaining;
+                {" "}{importProgress.succeeded} imported and verified,
+                {" "}{importProgress.skipped} skipped,
+                {" "}{importProgress.failed} failed.
+              </p>
+            </div>
+          )}
           {importValidation && (
             <div className="import-validation">
               <h3>Validation summary</h3>
@@ -510,11 +646,11 @@ export function AdministrationPage() {
               ))}</ul>
               {importValidation.duplicate_count > 0 || duplicateDecisionRequired ? (
                 <div className="search-actions">
-                  <button className="button button-primary" type="button" onClick={() => void importSelected("skip")}>Skip duplicates</button>
-                  <button className="button button-secondary" type="button" onClick={() => void importSelected("overwrite")}>Overwrite duplicates</button>
+                  <button className="button button-primary" type="button" disabled={isImporting} onClick={() => void importSelected("skip")}>Skip duplicates</button>
+                  <button className="button button-secondary" type="button" disabled={isImporting} onClick={() => void importSelected("overwrite")}>Overwrite duplicates</button>
                 </div>
               ) : (
-                <button className="button button-primary" type="button" onClick={() => void importSelected()}>Import files</button>
+                <button className="button button-primary" type="button" disabled={isImporting} onClick={() => void importSelected()}>Import files</button>
               )}
             </div>
           )}
@@ -540,7 +676,13 @@ export function AdministrationPage() {
             </form>
             <p className="result-count">Last applied: {formatDate(network.updated_at)}</p>
           </section>
-          {pendingChange && <ChangeWorkflow change={pendingChange} onAdvance={() => void advanceChange(pendingChange)} />}
+          {pendingChange && (
+            <ChangeWorkflow
+              change={pendingChange}
+              onAdvance={() => void advanceChange(pendingChange)}
+              onCancel={() => void cancelStagedChange(pendingChange)}
+            />
+          )}
         </div>
       )}
     </section>
@@ -589,6 +731,7 @@ function MachineRow({
   onVerify,
   onFilter,
   onEdit,
+  onDelete,
 }: {
   machine: Machine;
   onConnectivity: () => void;
@@ -597,6 +740,7 @@ function MachineRow({
   onVerify: (ids: string) => void;
   onFilter: () => Promise<{ study_id: string; validated_at: string }[]>;
   onEdit: () => void;
+  onDelete: () => void;
 }) {
   const [studyIds, setStudyIds] = useState("");
   const [associatedStudies, setAssociatedStudies] = useState<string[] | null>(null);
@@ -611,6 +755,7 @@ function MachineRow({
           <button className="button button-small button-secondary" type="button" onClick={onIdentity}>Check identity</button>
           <button className="button button-small button-secondary" type="button" onClick={onEnabled}>{machine.enabled ? "Stage disable" : "Stage enable"}</button>
           <button className="button button-small button-secondary" type="button" onClick={onEdit}>Edit details</button>
+          <button className="button button-small button-danger" type="button" onClick={onDelete}>Delete registration</button>
           <label className="field">
             <span>Study IDs to verify (comma-separated)</span>
             <input value={studyIds} onChange={(event) => setStudyIds(event.target.value)} />
@@ -627,9 +772,11 @@ function MachineRow({
 function ChangeWorkflow({
   change,
   onAdvance,
+  onCancel,
 }: {
   change: ConfigurationChange;
   onAdvance: () => void;
+  onCancel: () => void;
 }) {
   const nextAction = change.state === "edit"
     ? "Validate"
@@ -644,7 +791,12 @@ function ChangeWorkflow({
       <p>{change.change_type.replace("_", " ")} — {change.state}</p>
       <pre>{JSON.stringify(change.proposed_values, null, 2)}</pre>
       {change.validation_errors.map((item) => <p className="error-message" key={item}>{item}</p>)}
-      {change.state !== "applied" && <button className="button button-primary" type="button" onClick={onAdvance}>{nextAction}</button>}
+      {change.state !== "applied" && change.state !== "cancelled" && (
+        <div className="admin-actions">
+          <button className="button button-primary" type="button" onClick={onAdvance}>{nextAction}</button>
+          <button className="button button-secondary" type="button" onClick={onCancel}>Cancel draft</button>
+        </div>
+      )}
       {change.restart_required && <p className="notice-message">Manual restart required after apply. No automatic restart will occur.</p>}
     </section>
   );

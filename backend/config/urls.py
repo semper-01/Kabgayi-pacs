@@ -16,11 +16,21 @@ urlpatterns = [
     ),
     path("api/admin/activity/", configuration_views.activity, name="admin-activity"),
     path(
+        "api/admin/activity/export/",
+        configuration_views.activity_export,
+        name="admin-activity-export",
+    ),
+    path(
         "api/admin/service-health/",
         configuration_views.service_health,
         name="admin-service-health",
     ),
     path("api/admin/machines/", configuration_views.machines, name="admin-machines"),
+    path(
+        "api/admin/machines/<int:machine_id>/",
+        configuration_views.delete_machine,
+        name="admin-machine-delete",
+    ),
     path(
         "api/admin/machines/<int:machine_id>/connectivity/",
         configuration_views.machine_connectivity,
@@ -55,6 +65,11 @@ urlpatterns = [
         "api/admin/configuration-changes/<int:change_id>/validate/",
         configuration_views.validate_configuration_change,
         name="admin-configuration-validate",
+    ),
+    path(
+        "api/admin/configuration-changes/<int:change_id>/cancel/",
+        configuration_views.cancel_configuration_change,
+        name="admin-configuration-cancel",
     ),
     path(
         "api/admin/configuration-changes/<int:change_id>/review/",

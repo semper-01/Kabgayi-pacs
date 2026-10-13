@@ -58,13 +58,21 @@ export async function request<T>(
     throw new ApiError("You are not authorized to access this information.", 403);
   }
   if (!response.ok) {
-    throw new ApiError("The request could not be completed. Please try again.", response.status);
+    throw new ApiError(
+      await responseErrorMessage(response, "The request could not be completed. Please try again."),
+      response.status,
+    );
   }
+  if (response.status === 204) return undefined as T;
 
   return (await response.json()) as T;
 }
 
-export async function requestFile(path: string, authorization: string): Promise<void> {
+export async function requestFile(
+  path: string,
+  authorization: string,
+  fallback = "Export failed. Please try again.",
+): Promise<void> {
   let response: Response;
   try {
     response = await fetch(apiUrl(path), {
@@ -86,7 +94,7 @@ export async function requestFile(path: string, authorization: string): Promise<
     throw new ApiError("You are not authorized to export this study.", 403);
   }
   if (!response.ok) {
-    throw new ApiError("Export failed. Please try again.", response.status);
+    throw new ApiError(await responseErrorMessage(response, fallback), response.status);
   }
 
   const blob = await response.blob();
@@ -101,6 +109,38 @@ export async function requestFile(path: string, authorization: string): Promise<
   link.click();
   link.remove();
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function responseErrorMessage(response: Response, fallback: string): Promise<string> {
+  const contentType = response.headers.get("Content-Type") ?? "";
+  if (!contentType.includes("application/json")) return fallback;
+  try {
+    const payload: unknown = await response.json();
+    if (typeof payload !== "object" || payload === null) return fallback;
+    const errors = payload as Record<string, unknown>;
+    for (const key of ["error", "detail", "validation_errors"]) {
+      const value = errors[key];
+      if (typeof value === "string" && value.trim()) return value;
+      if (Array.isArray(value)) {
+        const messages = value.filter((item): item is string => typeof item === "string");
+        if (messages.length) return messages.join(" ");
+      }
+    }
+    const fieldErrors = errors.errors;
+    if (typeof fieldErrors === "object" && fieldErrors !== null) {
+      const messages = Object.values(fieldErrors).flatMap((value) =>
+        typeof value === "string"
+          ? [value]
+          : Array.isArray(value)
+            ? value.filter((item): item is string => typeof item === "string")
+            : [],
+      );
+      if (messages.length) return messages.join(" ");
+    }
+  } catch {
+    return fallback;
+  }
+  return fallback;
 }
 
 export function getErrorMessage(error: unknown, fallback: string): string {
