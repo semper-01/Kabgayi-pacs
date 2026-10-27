@@ -1,6 +1,35 @@
 server {
     listen 80;
-    server_name localhost;
+    server_name _;
+
+    location ^~ /api/ {
+        resolver 127.0.0.11 ipv6=off valid=30s;
+        set $django_auth_upstream ${DJANGO_AUTH_UPSTREAM};
+        proxy_set_header Host 127.0.0.1;
+        proxy_set_header Authorization $http_authorization;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_pass http://$django_auth_upstream;
+    }
+
+    location ^~ /hospital-assets/ {
+        proxy_pass http://frontend;
+    }
+
+    location = /viewer {
+        proxy_set_header Host $host;
+        proxy_pass http://ohif:80;
+    }
+
+    location ^~ /viewer/ {
+        proxy_set_header Host $host;
+        proxy_pass http://ohif:80;
+    }
+
+    location ~* \.(js|mjs|css|wasm|json|ico|png|svg|webp|jpe?g|woff2?|ttf|eot|map)$ {
+        proxy_set_header Host $host;
+        proxy_pass http://ohif:80;
+    }
 
     # DICOMweb (QIDO-RS / WADO-RS). OHIF sends relative /dicom-web requests on
     # the same origin. Django authorizes the PACS user before nginx injects
@@ -36,10 +65,8 @@ server {
         proxy_set_header X-Original-URI "";
     }
 
-    # Serve the OHIF viewer from its own container so the whole UI + proxy share
-    # a single origin. Keeps relative paths (/dicom-web) routing through nginx.
     location / {
         proxy_set_header Host $host;
-        proxy_pass http://ohif:80;
+        proxy_pass http://frontend:80;
     }
 }

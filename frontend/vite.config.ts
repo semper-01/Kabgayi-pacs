@@ -8,6 +8,9 @@ const devApiTarget = process.env.VITE_DEV_PROXY_TARGET || "http://127.0.0.1:8000
 
 export default defineConfig({
   plugins: [react()],
+  build: {
+    assetsDir: "hospital-assets",
+  },
   server: {
     port: 5173,
     proxy: {
