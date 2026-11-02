@@ -1,0 +1,17 @@
+diff --git a/dist/esm/imageLoader/createImage.js b/dist/esm/imageLoader/createImage.js
+--- a/dist/esm/imageLoader/createImage.js
++++ b/dist/esm/imageLoader/createImage.js
+@@ -262,4 +262,9 @@
+-                voiLUTFunction: (voiLutModule.voiLUTFunction?.length &&
+-                    voiLutModule.voiLUTFunction[0]) ||
+-                    voiLutModule.voiLutFunction ||
+-                    undefined,
++                voiLUTFunction: (() => {
++                    const rawVOILUTFunction = voiLutModule.voiLUTFunction;
++                    const value = Array.isArray(rawVOILUTFunction)
++                        ? rawVOILUTFunction[0]
++                        : rawVOILUTFunction;
++                    return typeof value === 'string'
++                        ? value.trim() || undefined
++                        : value;
++                })(),

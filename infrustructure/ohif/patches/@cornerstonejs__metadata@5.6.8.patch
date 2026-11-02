@@ -1,0 +1,15 @@
+diff --git a/dist/esm/utilities/getPixelSpacingInformation.js b/dist/esm/utilities/getPixelSpacingInformation.js
+--- a/dist/esm/utilities/getPixelSpacingInformation.js
++++ b/dist/esm/utilities/getPixelSpacingInformation.js
+@@ -22,3 +22,8 @@
+-    if (sod < sid) {
+-        return sid / sod;
+-    }
++    if (sod != null && sid != null) {
++        const sourceToPatient = Number(sod);
++        const sourceToDetector = Number(sid);
++        if (Number.isFinite(sourceToPatient) && sourceToPatient > 0 &&
++            Number.isFinite(sourceToDetector) && sourceToDetector > sourceToPatient) {
++            return sourceToDetector / sourceToPatient;
++        }
++    }
