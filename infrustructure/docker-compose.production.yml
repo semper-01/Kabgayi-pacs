@@ -114,6 +114,7 @@ services:
       - "8042"
     networks:
       - pacs-internal
+      - pacs-gateway
     restart: unless-stopped
 
   ohif:
