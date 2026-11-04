@@ -1,0 +1,60 @@
+services:
+  nginx:
+    image: nginx:alpine
+    container_name: nginx-proxy
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx/nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
+    environment:
+      - ORTHANC_BASIC=${ORTHANC_BASIC}
+      - DJANGO_AUTH_UPSTREAM=${DJANGO_AUTH_UPSTREAM:-host.docker.internal:8000}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - orthanc
+      - ohif
+      - frontend
+
+  frontend:
+    build:
+      context: ../frontend
+    container_name: pacs-frontend
+    expose:
+      - "80"
+    restart: unless-stopped
+    
+  orthanc:
+    image: orthancteam/orthanc
+    container_name: orthanc
+
+    environment:
+      ORTHANC_PASSWORD: ${ORTHANC_PASSWORD}
+      DICOM_WEB_PLUGIN_ENABLED: "true"
+
+    ports:
+      - "127.0.0.1:8042:8042"
+      - "4242:4242"
+
+    volumes:
+      - orthanc-storage:/var/lib/orthanc/db
+
+    restart: unless-stopped
+
+  ohif:
+    image: kabgayi-ohif:3.13.12-hotfix
+    build:
+      context: ./ohif
+      dockerfile: Dockerfile
+    container_name: ohif
+
+    expose:
+      - "80"
+
+    volumes:
+      - ./ohif/app-config.js:/usr/share/nginx/html/app-config.js:ro
+
+    restart: unless-stopped
+
+volumes:
+  orthanc-storage:

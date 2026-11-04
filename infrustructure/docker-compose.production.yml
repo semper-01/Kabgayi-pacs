@@ -1,0 +1,141 @@
+services:
+  nginx:
+    image: nginx:alpine@sha256:df221db836e1754089190208cee7eeda94f233197056426eda74a43ab1abeac2
+    ports:
+      - "${PACS_HTTP_PORT:-80}:80"
+    environment:
+      ORTHANC_BASIC: ${ORTHANC_BASIC:?Generate infrustructure/.env.production before starting}
+      DJANGO_AUTH_UPSTREAM: django:8000
+    volumes:
+      - ./nginx/nginx.production.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - pacs-static:/var/www/django-static:ro
+    depends_on:
+      frontend:
+        condition: service_healthy
+      ohif:
+        condition: service_healthy
+      django:
+        condition: service_healthy
+      orthanc:
+        condition: service_started
+    networks:
+      - pacs-internal
+      - pacs-gateway
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  frontend:
+    image: kabgayi-pacs-frontend:production
+    expose:
+      - "80"
+    networks:
+      - pacs-internal
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  django:
+    image: kabgayi-pacs-backend:production
+    env_file:
+      - ./.env.production
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      ORTHANC_URL: http://orthanc:8042
+      ORTHANC_USERNAME: orthanc
+      OHIF_HEALTH_URL: http://ohif
+      STATIC_ROOT: /app/staticfiles
+    expose:
+      - "8000"
+    volumes:
+      - pacs-static:/app/staticfiles
+    depends_on:
+      postgres:
+        condition: service_healthy
+      orthanc:
+        condition: service_started
+    networks:
+      - pacs-internal
+      - pacs-gateway
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health/', timeout=3)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  postgres:
+    image: postgres:16@sha256:65b16a8b326e0cfbdf33fa7e783f2a0cb352a61448616ccccfd616ef42aa0f65
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in infrustructure/.env.production}
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in infrustructure/.env.production}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Generate infrustructure/.env.production before starting}
+    volumes:
+      - /srv/pacs/postgres:/var/lib/postgresql/data
+    networks:
+      - pacs-internal
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  orthanc:
+    image: orthancteam/orthanc:latest@sha256:d2705f2c56547e55ce9bc2250fd22d05d326493b3f3d9fa191ecb7db8ca6b5a2
+    environment:
+      ORTHANC_PASSWORD: ${ORTHANC_PASSWORD:?Generate infrustructure/.env.production before starting}
+      ORTHANC__AUTHENTICATION_ENABLED: "true"
+      ORTHANC__REMOTE_ACCESS_ALLOWED: "true"
+      DICOM_WEB_PLUGIN_ENABLED: "true"
+    ports:
+      - "127.0.0.1:8042:8042"
+      - "4242:4242"
+    volumes:
+      - /srv/pacs/orthanc:/var/lib/orthanc/db
+    expose:
+      - "8042"
+    networks:
+      - pacs-internal
+    restart: unless-stopped
+
+  ohif:
+    image: kabgayi-ohif:3.13.12-hotfix
+    expose:
+      - "80"
+    volumes:
+      - ./ohif/app-config.js:/usr/share/nginx/html/app-config.js:ro
+    networks:
+      - pacs-internal
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1/app-config.js || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+networks:
+  pacs-internal:
+    internal: true
+  pacs-gateway:
+
+volumes:
+  pacs-static:

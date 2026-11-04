@@ -1,0 +1,96 @@
+server {
+    listen 80;
+    server_name _;
+
+    location ^~ /api/ {
+        resolver 127.0.0.11 ipv6=off valid=30s;
+        set $django_auth_upstream ${DJANGO_AUTH_UPSTREAM};
+        proxy_set_header Host $host;
+        proxy_set_header Authorization $http_authorization;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_pass http://$django_auth_upstream;
+    }
+
+    location ^~ /static/ {
+        alias /var/www/django-static/;
+        access_log off;
+        expires 7d;
+    }
+
+    location ^~ /hospital-assets/ {
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_pass http://frontend:80;
+    }
+
+    location = /viewer {
+        auth_request /_pacs_viewer_auth;
+        proxy_set_header Host $host;
+        proxy_pass http://ohif:80;
+    }
+
+    location ^~ /viewer/ {
+        auth_request /_pacs_viewer_auth;
+        proxy_set_header Host $host;
+        proxy_pass http://ohif:80;
+    }
+
+    location ~* \.(js|mjs|css|wasm|json|ico|png|svg|webp|jpe?g|woff2?|ttf|eot|map)$ {
+        auth_request /_pacs_viewer_auth;
+        proxy_set_header Host $host;
+        proxy_pass http://ohif:80;
+    }
+
+    location /dicom-web/ {
+        auth_request /_pacs_viewer_auth;
+        limit_except GET HEAD { deny all; }
+        proxy_set_header Authorization "Basic ${ORTHANC_BASIC}";
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_pass http://orthanc:8042/dicom-web/;
+        access_log off;
+    }
+
+    location /wado/ {
+        auth_request /_pacs_viewer_auth;
+        limit_except GET HEAD { deny all; }
+        proxy_set_header Authorization "Basic ${ORTHANC_BASIC}";
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_pass http://orthanc:8042/wado/;
+        access_log off;
+    }
+
+    location = /_pacs_viewer_auth {
+        internal;
+        resolver 127.0.0.11 ipv6=off valid=30s;
+        set $django_auth_upstream ${DJANGO_AUTH_UPSTREAM};
+        proxy_pass http://$django_auth_upstream/api/viewer-access/authorize/;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        proxy_set_header Host $host;
+        proxy_set_header Accept application/json;
+        proxy_set_header Authorization "";
+        proxy_set_header Cookie "pacs_viewer_grant=$cookie_pacs_viewer_grant";
+        proxy_set_header X-Original-URI "";
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location / {
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_pass http://frontend:80;
+    }
+}

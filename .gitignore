@@ -1,4 +1,7 @@
 .env
+/infrustructure/.env.production
+/infrustructure/pacs-deployment-*.tar
+/infrustructure/pacs-deployment-*.tar.gz
 
 # Python / Django
 __pycache__/
