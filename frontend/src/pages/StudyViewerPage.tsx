@@ -10,7 +10,9 @@ import type { Study } from "../types/study";
 const VIEWER_GRANT_REFRESH_SECONDS = 240;
 const OHIF_BASE_URL =
   import.meta.env.VITE_OHIF_BASE_URL ||
-  window.location.origin;
+  (import.meta.env.DEV
+    ? `${window.location.protocol}//${window.location.hostname}:8080`
+    : window.location.origin);
 
 interface ViewerLocationState {
   study?: Study;
